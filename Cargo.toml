@@ -4,6 +4,7 @@ version = "1.0.0"
 edition = "2024"
 license = "MIT"
 description = "rclone sync on ratatui"
+readme = "README.md"
 keywords = ["rclone", "galion", "cloud", "sync", "tui", "ratatui"]
 categories = ["command-line-utilities", "filesystem"]
 repository = "https://github.com/Its-Just-Nans/galion"
