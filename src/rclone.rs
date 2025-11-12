@@ -1,6 +1,7 @@
 //! Wrapper calls around [`lirclone`]
 
 use librclone::{finalize as lib_finalize, initialize as lib_initialize, rpc};
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 use crate::errors::GalionError;
@@ -128,26 +129,10 @@ impl Rclone {
     /// List rclone jobs
     /// # Errors
     /// Fails if error with lib
-    pub fn job_list() -> Result<Vec<u64>, GalionError> {
+    pub fn job_list() -> Result<RcJobList, GalionError> {
         let res = rpc("job/list", json!({}).to_string())?;
-        let value = serde_json::from_str::<Value>(&res)?;
-        match value {
-            Value::Object(arr) => match arr.get("jobids") {
-                Some(Value::Array(jobs_list)) => {
-                    let mut jobs = Vec::new();
-                    for job in jobs_list {
-                        if let Value::Number(job_id) = job
-                            && let Some(id) = job_id.as_u64()
-                        {
-                            jobs.push(id);
-                        }
-                    }
-                    Ok(jobs)
-                }
-                _ => Ok(vec![]),
-            },
-            _ => Err("Bad response - no jobs".into()),
-        }
+        let list = serde_json::from_str::<RcJobList>(&res)?;
+        Ok(list)
     }
 
     /// Get job status by id
@@ -158,4 +143,12 @@ impl Rclone {
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
+}
+
+/// RcJobList
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RcJobList {
+    /// ids of jobs
+    #[serde(rename = "jobids")]
+    pub job_ids: Vec<u64>,
 }

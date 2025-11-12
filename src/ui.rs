@@ -31,7 +31,7 @@ use crate::rclone::Rclone;
 use crate::{GalionApp, GalionError};
 
 /// rclone job type
-type Jobs = HashMap<u64, String>;
+type JobsInfo = HashMap<u64, String>;
 
 /// Job statut
 pub enum SyncJob {
@@ -48,7 +48,7 @@ impl GalionApp {
     pub fn run_tui(&self) -> Result<(), GalionError> {
         let mut terminal = ratatui::init();
         let (tx_sync, mut rx_sync) = unbounded_channel::<SyncJob>();
-        let (tx_job, rx_jobs) = channel::<Jobs>();
+        let (tx_job, rx_jobs) = channel::<JobsInfo>();
         let rt = Runtime::new()?;
 
         let sync_handler = rt.spawn(async move {
@@ -57,9 +57,12 @@ impl GalionApp {
 
                 loop {
                     interval.tick().await;
-                    let list = Rclone::job_list().unwrap_or_default();
-                    let mut hash_map: Jobs = HashMap::new();
-                    for job_id in list {
+                    let job_list = match Rclone::job_list() {
+                        Ok(list) => list,
+                        Err(_) => continue,
+                    };
+                    let mut hash_map: JobsInfo = HashMap::new();
+                    for job_id in job_list.job_ids {
                         if let Ok(res) = Rclone::job_status(job_id)
                             && let Some(Value::Bool(finished)) = res.get("finished")
                             && !finished
@@ -96,11 +99,11 @@ pub struct TuiApp<'a> {
     /// app
     app: &'a GalionApp,
     /// receiver of job
-    pub rx_jobs: Receiver<Jobs>,
+    pub rx_jobs: Receiver<JobsInfo>,
     /// sender of sync job
     pub tx_sync: UnboundedSender<SyncJob>,
     /// Map of jobs
-    pub jobs: Jobs,
+    pub jobs: JobsInfo,
     /// should exit
     exit: bool,
     /// longest item length
@@ -165,7 +168,7 @@ impl<'a> TuiApp<'a> {
     /// Tui App
     pub fn new(
         app: &'a GalionApp,
-        rx_jobs: Receiver<Jobs>,
+        rx_jobs: Receiver<JobsInfo>,
         tx_sync: UnboundedSender<SyncJob>,
     ) -> Self {
         let remotes = app.remotes();
