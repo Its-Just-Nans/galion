@@ -1,5 +1,6 @@
 //! galion main app
 
+use clap::ArgAction;
 use clap::Parser;
 use home::home_dir;
 use serde::{Deserialize, Serialize};
@@ -21,6 +22,16 @@ pub struct RemoteConfiguration {
     /// remote path
     pub remote_path: Option<String>,
 }
+
+/// Galion ASCII art
+/// This ASCII pic can be found at https://asciiart.website/art/4370
+pub(crate) const GALION_ASCII_ART: &str = r#"
+     _~
+  _~ )_)_~
+  )_))_))_)
+  _!__!__!_
+  \______t/
+~~~~~~~~~~~~~"#;
 
 impl RemoteConfiguration {
     /// Sync a remote
@@ -80,6 +91,10 @@ pub struct GalionArgs {
     /// Full path to the configuration file
     #[arg(long)]
     rclone_ask_password: bool,
+
+    /// Full path to the configuration file
+    #[arg(long, action=ArgAction::SetTrue)]
+    hide_banner: bool,
 }
 
 /// Galion App
@@ -103,7 +118,7 @@ impl GalionApp {
     /// # Errors
     /// Error if fails
     pub fn try_new() -> Result<Self, GalionError> {
-        let galion_args = GalionArgs::parse();
+        let galion_args = GalionArgs::try_parse()?;
         let config_path = galion_args
             .config
             .clone()
@@ -169,6 +184,14 @@ impl GalionApp {
         if let Some(rclone_config_path) = &self.galion_args.rclone_config {
             Rclone::set_config_path(&rclone_config_path.to_string_lossy())?;
         }
+        if !self.galion_args.hide_banner {
+            println!("{}", GALION_ASCII_ART);
+        }
+        Rclone::set_config_options(json!({
+            "main": {
+                "LogLevel": "CRITICAL",
+            },
+        }))?;
         // TODO handle configuration password
         if !self.galion_args.rclone_ask_password {
             Rclone::set_config_options(json!({
@@ -237,8 +260,8 @@ impl GalionApp {
     /// # Errors
     /// Fails if save config fails or librclone fails
     pub fn quit(&mut self) -> Result<(), GalionError> {
-        self.save_config()?;
         self.rclone.finalize();
+        self.save_config()?;
         Ok(())
     }
 }

@@ -26,7 +26,7 @@ use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::time;
 
-use crate::app::RemoteConfiguration;
+use crate::app::{GALION_ASCII_ART, RemoteConfiguration};
 use crate::rclone::Rclone;
 use crate::{GalionApp, GalionError};
 
@@ -46,7 +46,6 @@ impl GalionApp {
     /// # Errors
     /// Errors when ui errors
     pub fn run_tui(&self) -> Result<(), GalionError> {
-        let mut terminal = ratatui::init();
         let (tx_sync, mut rx_sync) = unbounded_channel::<SyncJob>();
         let (tx_job, rx_jobs) = channel::<JobsInfo>();
         let rt = Runtime::new()?;
@@ -75,17 +74,21 @@ impl GalionApp {
                     }
                 }
             });
+            // spawn your async tasks
             while let Some(_i) = rx_sync.recv().await {
+                eprintln!("qsdf");
                 match _i {
                     SyncJob::Exit => break,
-                    SyncJob::Sync(job_id) => {
+                    SyncJob::Sync(_job_id) => {
                         tokio::task::spawn(async move { Rclone::rc_noop(json!({"_async": true})) });
                     }
                 }
             }
             job_checker.abort();
+            eprintln!("ardsqf");
         });
 
+        let mut terminal = ratatui::init();
         let app_result = TuiApp::new(self, rx_jobs, tx_sync).run(&mut terminal);
         sync_handler.abort();
         ratatui::restore();
@@ -114,6 +117,9 @@ pub struct TuiApp<'a> {
     state: TableState,
     /// state of the scrollbar
     scroll_state: ScrollbarState,
+
+    /// TODO rm
+    count: i64,
 }
 
 /// Item size
@@ -182,6 +188,7 @@ impl<'a> TuiApp<'a> {
             colors: Colors::default(),
             state: TableState::default().with_selected(0),
             scroll_state: ScrollbarState::new(remotes.len() * ITEM_HEIGHT),
+            count: 0,
         }
     }
 
@@ -210,19 +217,27 @@ impl<'a> TuiApp<'a> {
         let job_block = Block::default()
             .borders(Borders::ALL)
             .style(Style::default());
-        let job = Paragraph::new(Text::styled(
-            format!("jobs: {:?}", self.jobs),
-            Style::default().fg(Color::Green),
-        ))
-        .wrap(Wrap { trim: false })
-        .block(job_block);
-        frame.render_widget(job, chunks[1]);
+        let job_text = if self.jobs.is_empty() {
+            self.count += 1;
+            format!(
+                "{}\nNothing to do, just sailing\n{:?}",
+                GALION_ASCII_ART, self.count
+            )
+        } else {
+            format!("jobs: {:?}", self.jobs)
+        };
+        let job_paragraph =
+            Paragraph::new(Text::styled(job_text, Style::default().fg(Color::Green)))
+                .wrap(Wrap { trim: false })
+                .block(job_block);
+        frame.render_widget(job_paragraph, chunks[1]);
     }
 
     /// updates the application's state based on user input
     fn handle_events(&mut self) -> io::Result<()> {
         if poll(Duration::from_millis(1000))? {
-            match event::read()? {
+            let evt = event::read()?;
+            match evt {
                 // it's important to check that the event is a key press event as
                 // crossterm also emits key release and repeat events on Windows.
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
@@ -291,7 +306,7 @@ impl<'a> TuiApp<'a> {
     fn exit(&mut self) {
         self.exit = true;
         if let Err(_e) = self.tx_sync.send(SyncJob::Exit) {
-            // ignore
+            // println!("{}", _e); //TODO
         }
     }
 
@@ -314,7 +329,7 @@ impl<'a> TuiApp<'a> {
             .height(1);
         let remotes = self.app.remotes();
         let rows = remotes.iter().enumerate().map(|(i, data)| {
-            let color = match i % 2 {
+            let _color = match i % 2 {
                 0 => self.colors.normal_row_color,
                 _ => self.colors.alt_row_color,
             };
