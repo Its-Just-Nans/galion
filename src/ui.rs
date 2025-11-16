@@ -1,8 +1,6 @@
 //! Galion ui using ratatui
 
-use crossterm::event::KeyModifiers;
-use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind};
-use ratatui::crossterm::event::poll;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll};
 use ratatui::layout::{Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::widgets::{
@@ -49,7 +47,7 @@ impl GalionApp {
         let (tx_sync, mut rx_sync) = unbounded_channel::<SyncJob>();
         let (tx_job, rx_jobs) = channel::<JobsInfo>();
         let rt = Runtime::new()?;
-
+        let remotes = self.remotes();
         let sync_handler = rt.spawn(async move {
             let job_checker = tokio::task::spawn(async move {
                 let mut interval = time::interval(Duration::from_millis(1000));
@@ -89,7 +87,7 @@ impl GalionApp {
         });
 
         let mut terminal = ratatui::init();
-        let app_result = TuiApp::new(self, rx_jobs, tx_sync).run(&mut terminal);
+        let app_result = TuiApp::new(remotes, rx_jobs, tx_sync).run(&mut terminal);
         sync_handler.abort();
         ratatui::restore();
         app_result.map_err(|e| GalionError::new(e.to_string()))
@@ -98,9 +96,9 @@ impl GalionApp {
 
 /// Galion Tui app
 #[derive(Debug)]
-pub struct TuiApp<'a> {
+pub struct TuiApp {
     /// app
-    app: &'a GalionApp,
+    remotes: Vec<RemoteConfiguration>,
     /// receiver of job
     pub rx_jobs: Receiver<JobsInfo>,
     /// sender of sync job
@@ -170,24 +168,25 @@ fn constraint_len_calculator(items: &[RemoteConfiguration]) -> (u16, u16, u16) {
     longest_item_lens
 }
 
-impl<'a> TuiApp<'a> {
+impl TuiApp {
     /// Tui App
     pub fn new(
-        app: &'a GalionApp,
+        remotes: Vec<RemoteConfiguration>,
         rx_jobs: Receiver<JobsInfo>,
         tx_sync: UnboundedSender<SyncJob>,
     ) -> Self {
-        let remotes = app.remotes();
+        let longest_item_lens = constraint_len_calculator(&remotes);
+        let remotes_len = remotes.len();
         TuiApp {
-            app,
+            remotes,
             rx_jobs,
             tx_sync,
             jobs: Default::default(),
             exit: false,
-            longest_item_lens: constraint_len_calculator(&remotes),
+            longest_item_lens,
             colors: Colors::default(),
             state: TableState::default().with_selected(0),
-            scroll_state: ScrollbarState::new(remotes.len() * ITEM_HEIGHT),
+            scroll_state: ScrollbarState::new(remotes_len * ITEM_HEIGHT),
             count: 0,
         }
     }
@@ -236,8 +235,7 @@ impl<'a> TuiApp<'a> {
     /// updates the application's state based on user input
     fn handle_events(&mut self) -> io::Result<()> {
         if poll(Duration::from_millis(1000))? {
-            let evt = event::read()?;
-            match evt {
+            match event::read()? {
                 // it's important to check that the event is a key press event as
                 // crossterm also emits key release and repeat events on Windows.
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
@@ -274,8 +272,8 @@ impl<'a> TuiApp<'a> {
     pub fn next_row(&mut self) {
         let i = match self.state.selected() {
             Some(i) => {
-                if i >= self.app.remotes().len() - 1 {
-                    self.app.remotes().len() - 1
+                if i >= self.remotes.len() - 1 {
+                    self.remotes.len() - 1
                 } else {
                     i + 1
                 }
@@ -327,8 +325,7 @@ impl<'a> TuiApp<'a> {
             .collect::<Row<'_>>()
             .style(header_style)
             .height(1);
-        let remotes = self.app.remotes();
-        let rows = remotes.iter().enumerate().map(|(i, data)| {
+        let rows = self.remotes.iter().enumerate().map(|(i, data)| {
             let _color = match i % 2 {
                 0 => self.colors.normal_row_color,
                 _ => self.colors.alt_row_color,
