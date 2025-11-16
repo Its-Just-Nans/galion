@@ -74,7 +74,6 @@ impl GalionApp {
             });
             // spawn your async tasks
             while let Some(_i) = rx_sync.recv().await {
-                eprintln!("qsdf");
                 match _i {
                     SyncJob::Exit => break,
                     SyncJob::Sync(_job_id) => {
@@ -83,7 +82,6 @@ impl GalionApp {
                 }
             }
             job_checker.abort();
-            eprintln!("ardsqf");
         });
 
         let mut terminal = ratatui::init();
@@ -115,9 +113,8 @@ pub struct TuiApp {
     state: TableState,
     /// state of the scrollbar
     scroll_state: ScrollbarState,
-
-    /// TODO rm
-    count: i64,
+    /// Debug frames
+    debug_frame: Option<i64>,
 }
 
 /// Item size
@@ -187,7 +184,7 @@ impl TuiApp {
             colors: Colors::default(),
             state: TableState::default().with_selected(0),
             scroll_state: ScrollbarState::new(remotes_len * ITEM_HEIGHT),
-            count: 0,
+            debug_frame: None, // Some(0),
         }
     }
 
@@ -217,11 +214,12 @@ impl TuiApp {
             .borders(Borders::ALL)
             .style(Style::default());
         let job_text = if self.jobs.is_empty() {
-            self.count += 1;
-            format!(
-                "{}\nNothing to do, just sailing\n{:?}",
-                GALION_ASCII_ART, self.count
-            )
+            let mut str_to_show = format!("{}\nNothing to do, just sailing", GALION_ASCII_ART);
+            if let Some(debug_frame) = &mut self.debug_frame {
+                *debug_frame += 1;
+                str_to_show.push_str(&format!("\n{:?}", debug_frame));
+            }
+            str_to_show
         } else {
             format!("jobs: {:?}", self.jobs)
         };
