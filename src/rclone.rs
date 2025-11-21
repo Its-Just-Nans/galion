@@ -151,4 +151,10 @@ pub struct RcJobList {
     /// ids of jobs
     #[serde(rename = "jobids")]
     pub job_ids: Vec<u64>,
+    /// running ids
+    #[serde(rename = "runningIds")]
+    pub running_ids: Vec<u64>,
+    /// finished ids
+    #[serde(rename = "finishedIds")]
+    pub finished_ids: Vec<u64>,
 }

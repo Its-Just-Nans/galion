@@ -192,7 +192,6 @@ impl GalionApp {
                 "LogLevel": "CRITICAL",
             },
         }))?;
-        // TODO handle configuration password
         if !self.galion_args.rclone_ask_password {
             Rclone::set_config_options(json!({
                 "main": {
@@ -200,21 +199,16 @@ impl GalionApp {
                 },
             }))?;
         }
-        match Rclone::dump_config() {
-            Ok(_) => {
-                // rclone has the config ready
-            }
-            Err(e) => {
-                let msg = if self.galion_args.rclone_ask_password {
-                    " and the decryption failed"
-                } else {
-                    "and you can retry with the --rclone-ask-password flag"
-                };
-                return Err(GalionError::new(format!(
-                    "Failed to get the rclone configuration. Most likely the configuration is encrypted {} - {}",
-                    msg, e
-                )));
-            }
+        if let Err(e) = Rclone::dump_config() {
+            let msg = if self.galion_args.rclone_ask_password {
+                " and the decryption failed"
+            } else {
+                "and you can retry with the --rclone-ask-password flag"
+            };
+            return Err(GalionError::new(format!(
+                "Failed to get the rclone configuration. Most likely the configuration is encrypted {} - {}",
+                msg, e
+            )));
         }
         let list_remotes = Rclone::listremotes()?;
         for remote in list_remotes {
