@@ -25,7 +25,7 @@ use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::app::{GALION_ASCII_ART};
+use crate::app::GALION_ASCII_ART;
 use crate::remote::RemoteConfiguration;
 use crate::{GalionApp, GalionError};
 

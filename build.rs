@@ -5,9 +5,11 @@ use std::path::PathBuf;
 use std::process::Command;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let lib_name = "librclone";
+    let rclone_repo = format!("github.com/rclone/rclone/{}", lib_name);
     let target_triple = env::var("TARGET")?;
     let out_dir = env::var("CARGO_MANIFEST_DIR")?;
-    let out_path = PathBuf::from(&out_dir).join("src").join("librclone");
+    let out_path = PathBuf::from(&out_dir).join("src").join(lib_name);
 
     // docs.rs blocks network builds, so generate empty bindings for documentation
     if env::var("DOCS_RS").is_ok() {
@@ -27,15 +29,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut gofile_buf = String::new();
     gofile_buf.push_str("package main\n\n");
-    gofile_buf.push_str("import \"github.com/rclone/rclone/librclone\"");
-    std::fs::write(out_path.join("librclone.go"), gofile_buf)?;
+    gofile_buf.push_str(&format!("import \"{}\"", rclone_repo));
+    std::fs::write(out_path.join(format!("{}.go", lib_name)), gofile_buf)?;
 
     // Build the Go static library
     let status = Command::new("go")
         .current_dir("src/librclone")
         .args(["build", "--buildmode=c-archive", "-o"])
-        .arg(out_path.join("librclone.a"))
-        .arg("github.com/rclone/rclone/librclone")
+        .arg(out_path.join(format!("{}.a", lib_name)))
+        .arg(rclone_repo)
         .status()?;
 
     if !status.success() {
@@ -56,7 +58,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Generate Rust bindings using bindgen
     let bindings = bindgen::Builder::default()
-        .header(out_path.join("librclone.h").to_string_lossy())
+        .header(out_path.join(format!("{}.h", lib_name)).to_string_lossy())
         .allowlist_function("RcloneRPC")
         .allowlist_function("RcloneInitialize")
         .allowlist_function("RcloneFinalize")
