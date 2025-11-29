@@ -12,7 +12,6 @@ homepage = "https://github.com/Its-Just-Nans/galion"
 
 [dependencies]
 home = "0.5"
-librclone-bindings = { path = "./librclone-bindings" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 ratatui = "0.29"
@@ -23,3 +22,6 @@ tokio = { version = "1", features = [
     "macros",
 ] }
 clap = { version = "4.5.53", features = ["derive"] }
+
+[build-dependencies]
+bindgen = "0.72.1"

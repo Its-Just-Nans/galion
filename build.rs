@@ -15,12 +15,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Re-run build script if these files change
-    println!("cargo:rerun-if-changed=go.mod");
-    println!("cargo:rerun-if-changed=go.sum");
+    println!("cargo:rerun-if-changed=src/bindings/go.mod");
+    println!("cargo:rerun-if-changed=src/bindings/go.sum");
 
     // Build the Go static library
     let lib_path = out_path.join("librclone.a");
     let status = Command::new("go")
+        .current_dir("src/bindings")
         .args(["build", "--buildmode=c-archive", "-o"])
         .arg(&lib_path)
         .arg("github.com/rclone/rclone/librclone")
