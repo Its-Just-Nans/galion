@@ -3,3 +3,4 @@
 
 src/librclone/librclone.a
 src/librclone/librclone.h
+src/librclone/Makefile
