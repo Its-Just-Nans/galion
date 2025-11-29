@@ -1,6 +1,7 @@
 /target
 .env
 
+src/librclone/librclone.go
 src/librclone/librclone.a
 src/librclone/librclone.h
 src/librclone/Makefile

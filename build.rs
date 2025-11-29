@@ -25,12 +25,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         out_path.join("go.sum").display()
     );
 
+    let mut gofile_buf = String::new();
+    gofile_buf.push_str("package main\n\n");
+    gofile_buf.push_str("import \"github.com/rclone/rclone/librclone\"");
+    std::fs::write(out_path.join("librclone.go"), gofile_buf)?;
+
     // Build the Go static library
-    let lib_path = out_path.join("librclone.a");
     let status = Command::new("go")
         .current_dir("src/librclone")
         .args(["build", "--buildmode=c-archive", "-o"])
-        .arg(&lib_path)
+        .arg(out_path.join("librclone.a"))
         .arg("github.com/rclone/rclone/librclone")
         .status()?;
 
