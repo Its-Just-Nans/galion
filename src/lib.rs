@@ -14,6 +14,7 @@
 mod app;
 mod errors;
 pub mod rclone;
+mod remote;
 mod ui;
 
 pub use app::GalionApp;

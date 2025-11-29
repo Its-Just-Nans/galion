@@ -8,7 +8,7 @@ mod tests {
     fn test_get_config() {
         let mut rclone = Rclone::default();
         rclone.initialize();
-        let res = Rclone::get_rpc_config().unwrap();
+        let res = rclone.get_rpc_config().unwrap();
         println!("{}", serde_json::to_string_pretty(&res).unwrap());
         rclone.finalize();
     }

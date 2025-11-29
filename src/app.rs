@@ -4,24 +4,16 @@ use clap::ArgAction;
 use clap::Parser;
 use home::home_dir;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use serde_json::json;
 use std::path::Path;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use crate::errors::GalionError;
 use crate::rclone::Rclone;
-
-/// Remote Configuration
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct RemoteConfiguration {
-    /// local path
-    pub local_path: Option<String>,
-    /// remote name
-    pub remote_name: String,
-    /// remote path
-    pub remote_path: Option<String>,
-}
+use crate::remote::ConfigOrigin;
+use crate::remote::RemoteConfiguration;
 
 /// Galion ASCII art
 /// This ASCII pic can be found at https://asciiart.website/art/4370
@@ -32,42 +24,6 @@ pub(crate) const GALION_ASCII_ART: &str = r#"
   _!__!__!_
   \______t/
 ~~~~~~~~~~~~~"#;
-
-impl RemoteConfiguration {
-    /// Sync a remote
-    /// # Errors
-    /// Errors if fails to send remote
-    pub fn sync(self) -> Result<Value, GalionError> {
-        if let Some(local_path) = &self.local_path {
-            if let Some(_remote_path) = &self.remote_path {
-                let dest = self.get_destination();
-                Rclone::sync(local_path.clone(), dest, true)
-            } else {
-                Err(GalionError::new("Remote path is not set"))
-            }
-        } else {
-            Err(GalionError::new("Local path is not set"))
-        }
-    }
-
-    /// Get the destination
-    pub fn get_destination(&self) -> String {
-        format!(
-            "{}:{}",
-            self.remote_name,
-            self.remote_path.as_deref().unwrap_or("")
-        )
-    }
-
-    /// Translate to a row
-    pub fn to_table_row(&self) -> [String; 3] {
-        [
-            self.remote_name.clone(),
-            self.local_path.clone().unwrap_or_default(),
-            self.get_destination(),
-        ]
-    }
-}
 
 /// remote configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -95,6 +51,10 @@ pub struct GalionArgs {
     /// Full path to the configuration file
     #[arg(long, action=ArgAction::SetTrue)]
     hide_banner: bool,
+
+    /// Should update the config file
+    #[arg(long, action=ArgAction::SetTrue)]
+    update_config: bool,
 }
 
 /// Galion App
@@ -106,8 +66,8 @@ pub struct GalionApp {
     galion_args: GalionArgs,
     /// config
     config: AppConfiguration,
-    /// rclone config
-    rclone: Rclone,
+    /// rclone instance
+    pub rclone: Arc<Mutex<Rclone>>,
 }
 
 /// app name
@@ -137,7 +97,13 @@ impl GalionApp {
     /// Error if fails
     pub fn try_new_init() -> Result<Self, GalionError> {
         let mut galion = Self::try_new()?;
-        galion.rclone.initialize();
+        {
+            let mut rclone = galion
+                .rclone
+                .lock()
+                .map_err(|e| GalionError::new(e.to_string()))?;
+            rclone.initialize();
+        }
         galion.init()?;
         Ok(galion)
     }
@@ -181,25 +147,29 @@ impl GalionApp {
     /// # Errors
     /// Fails if fails to init
     pub fn init(&mut self) -> Result<(), GalionError> {
+        let rclone = self
+            .rclone
+            .lock()
+            .map_err(|e| GalionError::new(e.to_string()))?;
         if let Some(rclone_config_path) = &self.galion_args.rclone_config {
-            Rclone::set_config_path(&rclone_config_path.to_string_lossy())?;
+            rclone.set_config_path(&rclone_config_path.to_string_lossy())?;
         }
         if !self.galion_args.hide_banner {
             println!("{}", GALION_ASCII_ART);
         }
-        Rclone::set_config_options(json!({
+        rclone.set_config_options(json!({
             "main": {
                 "LogLevel": "CRITICAL",
             },
         }))?;
         if !self.galion_args.rclone_ask_password {
-            Rclone::set_config_options(json!({
+            rclone.set_config_options(json!({
                 "main": {
                     "AskPassword": false,
                 },
             }))?;
         }
-        if let Err(e) = Rclone::dump_config() {
+        if let Err(e) = rclone.dump_config() {
             let msg = if self.galion_args.rclone_ask_password {
                 " and the decryption failed"
             } else {
@@ -210,7 +180,7 @@ impl GalionApp {
                 msg, e
             )));
         }
-        let list_remotes = Rclone::listremotes()?;
+        let list_remotes = rclone.list_remotes()?;
         for remote in list_remotes {
             if self
                 .config
@@ -220,16 +190,22 @@ impl GalionApp {
             {
                 continue;
             }
+            let remote_conf = rclone.get_remote(&remote)?;
+            println!("{}", remote_conf);
             let remote_config = RemoteConfiguration {
                 remote_name: remote,
                 local_path: None,
                 remote_path: None,
+                config_origin: ConfigOrigin::RcloneConfig,
             };
             self.config.remote_configurations.push(remote_config);
         }
+        if self.galion_args.update_config {
+            std::fs::write(&self.config_path, serde_json::to_string(&self.config)?)?;
+        }
         if self.config.remote_configurations.is_empty() {
             return Err(GalionError::new(format!(
-                "No remote found in rclone 'config/listremotes' and in config at {} - please add remote with rclone CLI",
+                "No remote found in rclone 'config/listremotes' and in the galion config at {} - please add remote with rclone CLI",
                 self.config_path.display()
             )));
         }
@@ -242,26 +218,24 @@ impl GalionApp {
         self.config.remote_configurations.clone()
     }
 
-    /// Save the configuration
-    /// # Errors
-    /// Fails if fails to save config
-    pub fn save_config(&mut self) -> Result<(), GalionError> {
-        std::fs::write(&self.config_path, serde_json::to_string(&self.config)?)?;
-        Ok(())
-    }
-
     /// Quit app
     /// # Errors
     /// Fails if save config fails or librclone fails
     pub fn quit(&mut self) -> Result<(), GalionError> {
-        self.rclone.finalize();
-        self.save_config()?;
+        {
+            let mut rclone = self
+                .rclone
+                .lock()
+                .map_err(|e| GalionError::new(e.to_string()))?;
+            rclone.finalize();
+        }
         Ok(())
     }
 }
 
 impl Drop for GalionApp {
     fn drop(&mut self) {
-        self.rclone.finalize();
+        let mut rclone = self.rclone.lock().unwrap();
+        rclone.finalize();
     }
 }

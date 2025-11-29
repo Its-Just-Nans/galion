@@ -22,10 +22,11 @@ use std::time::Duration;
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
+use tokio::task::JoinHandle;
 use tokio::time;
 
-use crate::app::{GALION_ASCII_ART, RemoteConfiguration};
-use crate::rclone::Rclone;
+use crate::app::{GALION_ASCII_ART};
+use crate::remote::RemoteConfiguration;
 use crate::{GalionApp, GalionError};
 
 /// rclone job type
@@ -48,40 +49,47 @@ impl GalionApp {
         let (tx_job, rx_jobs) = channel::<JobsInfo>();
         let rt = Runtime::new()?;
         let remotes = self.remotes();
-        let sync_handler = rt.spawn(async move {
-            let job_checker = tokio::task::spawn(async move {
-                let mut interval = time::interval(Duration::from_millis(1000));
-
-                loop {
-                    interval.tick().await;
-                    let job_list = match Rclone::job_list() {
-                        Ok(list) => list,
-                        Err(_) => continue,
-                    };
-                    let mut hash_map: JobsInfo = HashMap::new();
-                    for job_id in job_list.job_ids {
-                        if let Ok(res) = Rclone::job_status(job_id)
-                            && let Some(Value::Bool(finished)) = res.get("finished")
-                            && !finished
-                        {
-                            hash_map.insert(job_id, res.to_string());
-                        }
-                    }
-                    if let Err(_e) = tx_job.send(hash_map) {
-                        break;
+        let rclone_arc = self.rclone.clone();
+        let sync_handler: JoinHandle<Result<(), GalionError>> = rt.spawn(async move {
+            let mut interval = time::interval(Duration::from_millis(1000));
+            loop {
+                interval.tick().await;
+                let rclone = rclone_arc
+                    .lock()
+                    .map_err(|e| GalionError::new(format!("Mutex poisoned: {e}")))?;
+                let job_list = match rclone.job_list() {
+                    Ok(list) => list,
+                    Err(_) => continue,
+                };
+                let mut hash_map: JobsInfo = HashMap::new();
+                for job_id in job_list.job_ids {
+                    if let Ok(res) = rclone.job_status(job_id)
+                        && let Some(Value::Bool(finished)) = res.get("finished")
+                        && !finished
+                    {
+                        hash_map.insert(job_id, res.to_string());
                     }
                 }
-            });
-            // spawn your async tasks
-            while let Some(_i) = rx_sync.recv().await {
-                match _i {
-                    SyncJob::Exit => break,
-                    SyncJob::Sync(_job_id) => {
-                        tokio::task::spawn(async move { Rclone::rc_noop(json!({"_async": true})) });
+                tx_job
+                    .send(hash_map)
+                    .map_err(|e| GalionError::new(format!("Error send job status: {e}")))?;
+                if let Ok(_i) = rx_sync.try_recv() {
+                    match _i {
+                        SyncJob::Exit => {
+                            return Ok(());
+                        }
+                        SyncJob::Sync(_job_id) => {
+                            let rclone_cloned = rclone_arc.clone();
+                            tokio::task::spawn(async move {
+                                let rclone = rclone_cloned.lock().map_err(|e| {
+                                    GalionError::new(format!("Mutex poisoned: {e}"))
+                                })?;
+                                rclone.rc_noop(json!({"_async": true}))
+                            });
+                        }
                     }
                 }
             }
-            job_checker.abort();
         });
 
         let mut terminal = ratatui::init();

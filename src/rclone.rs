@@ -1,8 +1,8 @@
 //! Wrapper calls around [`lirclone`]
 
-use librclone::{finalize as lib_finalize, initialize as lib_initialize, rpc};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use std::ffi::{CStr, c_char};
 
 use crate::errors::GalionError;
 
@@ -17,7 +17,7 @@ impl Rclone {
     /// initialize lib
     pub fn initialize(&mut self) {
         if !self.librclone_is_initialized {
-            lib_initialize();
+            unsafe { librclone_bindings::RcloneInitialize() };
             self.librclone_is_initialized = true
         }
     }
@@ -25,16 +25,50 @@ impl Rclone {
     /// finalize lib
     pub fn finalize(&mut self) {
         if self.librclone_is_initialized {
-            lib_finalize();
+            unsafe { librclone_bindings::RcloneFinalize() }
             self.librclone_is_initialized = false
+        }
+    }
+
+    /// RPC call
+    /// # Errors
+    /// Errors if RPC call fails
+    pub fn rpc(&self, method: &str, input: Value) -> Result<String, String> {
+        let method_bytes = method.as_bytes();
+        let mut method_c_chars: Vec<c_char> = method_bytes
+            .iter()
+            .map(|c| *c as c_char)
+            .collect::<Vec<c_char>>();
+        method_c_chars.push(0); // null terminator
+        let method_mut_ptr: *mut c_char = method_c_chars.as_mut_ptr();
+
+        let input_bytes: Vec<u8> = input.to_string().into_bytes();
+        let mut input_c_chars: Vec<c_char> = input_bytes
+            .iter()
+            .map(|c| *c as c_char)
+            .collect::<Vec<c_char>>();
+        input_c_chars.push(0); // null terminator
+        let input_mut_ptr: *mut c_char = input_c_chars.as_mut_ptr();
+
+        let result = unsafe { librclone_bindings::RcloneRPC(method_mut_ptr, input_mut_ptr) };
+        let output_c_str: &CStr = unsafe { CStr::from_ptr(result.Output) };
+        let output_slice: &str = output_c_str
+            .to_str()
+            .map_err(|e| format!("Error formatting: {e}"))?;
+        let output: String = output_slice.to_owned();
+        unsafe { librclone_bindings::RcloneFreeString(result.Output) };
+
+        match result.Status {
+            200 => Ok(output),
+            _ => Err(output),
         }
     }
 
     /// rclone noop test
     /// # Errors
     /// Fails if error with lib
-    pub fn rc_noop(value: Value) -> Result<Value, GalionError> {
-        let res = rpc("rc/noop", value.to_string())?;
+    pub fn rc_noop(&self, value: Value) -> Result<Value, GalionError> {
+        let res = self.rpc("rc/noop", value)?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -42,8 +76,8 @@ impl Rclone {
     /// Get the rpc config
     /// # Errors
     /// Fails if error with lib
-    pub fn get_rpc_config() -> Result<Value, GalionError> {
-        let res = rpc("options/get", json!({}).to_string())?;
+    pub fn get_rpc_config(&self) -> Result<Value, GalionError> {
+        let res = self.rpc("options/get", json!({}))?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -51,8 +85,8 @@ impl Rclone {
     /// Set the rpc config
     /// # Errors
     /// Fails if error with lib
-    pub fn set_config_options(conf: Value) -> Result<Value, GalionError> {
-        let res = rpc("options/set", conf.to_string())?;
+    pub fn set_config_options(&self, conf: Value) -> Result<Value, GalionError> {
+        let res = self.rpc("options/set", conf)?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -60,12 +94,11 @@ impl Rclone {
     /// Set the rclone config path
     /// # Errors
     /// Fails if error with lib
-    pub fn set_config_path(config_path: &str) -> Result<Value, GalionError> {
+    pub fn set_config_path(&self, config_path: &str) -> Result<Value, GalionError> {
         let input_json = json!({
             "path": config_path
-        })
-        .to_string();
-        let res = rpc("config/setpath", input_json)?;
+        });
+        let res = self.rpc("config/setpath", input_json)?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -73,8 +106,8 @@ impl Rclone {
     /// Dump the rclone config
     /// # Errors
     /// Fails if error with lib
-    pub fn dump_config() -> Result<Value, GalionError> {
-        let res = rpc("config/dump", json!({}).to_string())?;
+    pub fn dump_config(&self) -> Result<Value, GalionError> {
+        let res = self.rpc("config/dump", json!({}))?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -82,8 +115,8 @@ impl Rclone {
     /// List the remotes
     /// # Errors
     /// Fails if error with lib
-    pub fn listremotes() -> Result<Vec<String>, GalionError> {
-        let res = rpc("config/listremotes", json!({}).to_string())?;
+    pub fn list_remotes(&self) -> Result<Vec<String>, GalionError> {
+        let res = self.rpc("config/listremotes", json!({}))?;
         let value = serde_json::from_str::<Value>(&res)?;
         match value {
             Value::Object(arr) => match arr.get("remotes") {
@@ -102,18 +135,31 @@ impl Rclone {
         }
     }
 
+    /// Get on remote
+    /// # Errors
+    /// Fails if error with lib
+    pub fn get_remote(&self, remote_name: &str) -> Result<String, GalionError> {
+        let res = self.rpc("config/get", json!({"name": remote_name}))?;
+        // let value = serde_json::from_str::<Value>(&res)?;
+        Ok(res)
+    }
+
     /// Trigger a sync job
     /// # Errors
     /// Fails if error with lib
-    pub fn sync(src_fs: String, dest_fs: String, is_async: bool) -> Result<Value, GalionError> {
-        match rpc(
+    pub fn sync(
+        &self,
+        src_fs: String,
+        dest_fs: String,
+        is_async: bool,
+    ) -> Result<Value, GalionError> {
+        match self.rpc(
             "sync/sync",
             json!({
                 "srcFs": src_fs,
                 "dstFs": dest_fs,
                 "_async": is_async,
-            })
-            .to_string(),
+            }),
         ) {
             Ok(res) => {
                 let value = serde_json::from_str::<Value>(&res)?;
@@ -129,8 +175,8 @@ impl Rclone {
     /// List rclone jobs
     /// # Errors
     /// Fails if error with lib
-    pub fn job_list() -> Result<RcJobList, GalionError> {
-        let res = rpc("job/list", json!({}).to_string())?;
+    pub fn job_list(&self) -> Result<RcJobList, GalionError> {
+        let res = self.rpc("job/list", json!({}))?;
         let list = serde_json::from_str::<RcJobList>(&res)?;
         Ok(list)
     }
@@ -138,8 +184,8 @@ impl Rclone {
     /// Get job status by id
     /// # Errors
     /// Fails if error with lib
-    pub fn job_status(job_id: u64) -> Result<Value, GalionError> {
-        let res = rpc("job/status", json!({ "jobid": job_id }).to_string())?;
+    pub fn job_status(&self, job_id: u64) -> Result<Value, GalionError> {
+        let res = self.rpc("job/status", json!({ "jobid": job_id }))?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
