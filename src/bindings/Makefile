@@ -1,4 +1,0 @@
-update:
-	rm -f go.mod go.sum
-	go mod init github.com/Its-Just-Nans/galion
-	go mod tidy -go=1.24.4

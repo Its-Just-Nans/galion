@@ -2,7 +2,7 @@
 
 #[cfg(test)]
 mod tests {
-    use galion::rclone::Rclone;
+    use galion::librclone::rclone::Rclone;
 
     #[test]
     fn test_get_config() {

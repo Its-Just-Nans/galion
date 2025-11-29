@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 
 use crate::errors::GalionError;
-use crate::rclone::Rclone;
+use crate::librclone::rclone::Rclone;
 use crate::remote::ConfigOrigin;
 use crate::remote::RemoteConfiguration;
 

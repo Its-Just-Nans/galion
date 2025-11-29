@@ -4,16 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::ffi::{CStr, c_char};
 
-use crate::errors::GalionError;
-
-/// See the <https://github.com/rclone/rclone/tree/master/librclone> for details.
-mod librclone_bindings {
-    #![allow(non_upper_case_globals)]
-    #![allow(non_camel_case_types)]
-    #![allow(non_snake_case)]
-
-    include!(concat!(env!("OUT_DIR"), "/bindings.rs"));
-}
+use crate::{errors::GalionError, librclone::bindings as librclone_bindings};
 
 /// Rclone wrapper
 #[derive(Debug, Default)]

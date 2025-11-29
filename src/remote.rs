@@ -3,7 +3,7 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{GalionError, rclone::Rclone};
+use crate::{GalionError, librclone::rclone::Rclone};
 
 /// Config origin
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]

@@ -13,7 +13,7 @@
 
 mod app;
 mod errors;
-pub mod rclone;
+pub mod librclone;
 mod remote;
 mod ui;
 

@@ -1,2 +1,5 @@
 /target
 .env
+
+src/librclone/librclone.a
+src/librclone/librclone.h
