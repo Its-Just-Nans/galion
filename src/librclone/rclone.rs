@@ -54,7 +54,7 @@ impl Rclone {
         let output_c_str: &CStr = unsafe { CStr::from_ptr(result.Output) };
         let output_slice: &str = output_c_str
             .to_str()
-            .map_err(|e| format!("Error formatting: {e}"))?;
+            .map_err(|e| format!("Error decoding the rclone RPC output: {e}"))?;
         let output: String = output_slice.to_owned();
         unsafe { librclone_bindings::RcloneFreeString(result.Output) };
 
