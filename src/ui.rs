@@ -1,12 +1,14 @@
 //! Galion ui using ratatui
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll};
-use ratatui::layout::{Margin, Rect};
+use ratatui::layout::{Alignment, Margin, Rect};
 use ratatui::style::{Modifier, Style};
+use ratatui::text::Line;
 use ratatui::widgets::{
     Borders, Cell, HighlightSpacing, Row, Scrollbar, ScrollbarOrientation, ScrollbarState, Table,
     TableState, Wrap,
 };
+
 use ratatui::{
     DefaultTerminal, Frame,
     layout::{Constraint, Direction, Layout},
@@ -19,13 +21,13 @@ use std::collections::HashMap;
 use std::io;
 use std::sync::mpsc::{Receiver, channel};
 use std::time::Duration;
+use time::{OffsetDateTime, macros::format_description};
 use tokio::runtime::Runtime;
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::mpsc::unbounded_channel;
 use tokio::task::JoinHandle;
-use tokio::time;
+use tokio::time::interval;
 
-use crate::app::GALION_ASCII_ART;
 use crate::remote::RemoteConfiguration;
 use crate::{GalionApp, GalionError};
 
@@ -51,7 +53,7 @@ impl GalionApp {
         let remotes = self.remotes();
         let rclone_arc = self.rclone.clone();
         let sync_handler: JoinHandle<Result<(), GalionError>> = rt.spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(1000));
+            let mut interval = interval(Duration::from_millis(750));
             loop {
                 interval.tick().await;
                 let rclone = rclone_arc
@@ -93,10 +95,13 @@ impl GalionApp {
         });
 
         let mut terminal = ratatui::init();
-        let app_result = TuiApp::new(remotes, rx_jobs, tx_sync).run(&mut terminal);
+        let app_result = TuiApp::new(remotes, rx_jobs, tx_sync)
+            .run(&mut terminal)
+            .map_err(|e| GalionError::new(e.to_string()));
         sync_handler.abort();
         ratatui::restore();
-        app_result.map_err(|e| GalionError::new(e.to_string()))
+        println!("  ~Galion~"); // Clean exit terminal
+        app_result
     }
 }
 
@@ -211,31 +216,17 @@ impl TuiApp {
     /// Ratatui draw
     fn draw(&mut self, frame: &mut Frame<'_>) {
         let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
+            .split(frame.area());
+        let sub_chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
-            .split(frame.area());
-
-        self.render_table(frame, chunks[0]);
-        self.render_scrollbar(frame, chunks[0]);
-
-        let job_block = Block::default()
-            .borders(Borders::ALL)
-            .style(Style::default());
-        let job_text = if self.jobs.is_empty() {
-            let mut str_to_show = format!("{}\nNothing to do, just sailing", GALION_ASCII_ART);
-            if let Some(debug_frame) = &mut self.debug_frame {
-                *debug_frame += 1;
-                str_to_show.push_str(&format!("\n{:?}", debug_frame));
-            }
-            str_to_show
-        } else {
-            format!("jobs: {:?}", self.jobs)
-        };
-        let job_paragraph =
-            Paragraph::new(Text::styled(job_text, Style::default().fg(Color::Green)))
-                .wrap(Wrap { trim: false })
-                .block(job_block);
-        frame.render_widget(job_paragraph, chunks[1]);
+            .split(chunks[0]);
+        self.render_table(frame, sub_chunks[0]);
+        self.render_scrollbar(frame, sub_chunks[0]);
+        self.render_right_panel(frame, sub_chunks[1]);
+        self.render_helper(frame, chunks[1]);
     }
 
     /// updates the application's state based on user input
@@ -312,6 +303,51 @@ impl TuiApp {
         if let Err(_e) = self.tx_sync.send(SyncJob::Exit) {
             // println!("{}", _e); //TODO
         }
+    }
+
+    /// Render helper
+    fn render_helper(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let [left_area, right_area] = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(1), Constraint::Length(20)])
+            .areas(area);
+        let left_text = Line::from("qsdfqs");
+        let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
+        let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
+        let date_str = now.format(&format).unwrap();
+        let right_text = Line::from(date_str);
+        let left_widget =
+            Paragraph::new(left_text).style(Style::default().bg(Color::Black).fg(Color::White));
+        let right_widget = Paragraph::new(right_text)
+            .alignment(Alignment::Right)
+            .style(Style::default().bg(Color::Black).fg(Color::White));
+        frame.render_widget(left_widget, left_area);
+        frame.render_widget(right_widget, right_area);
+    }
+
+    /// Render right panel
+    fn render_right_panel(&mut self, frame: &mut Frame<'_>, area: Rect) {
+        let job_block = Block::default()
+            .borders(Borders::ALL)
+            .style(Style::default());
+        let job_text = if self.jobs.is_empty() {
+            let mut str_to_show = format!(
+                "{}\nNothing to do, just sailing",
+                GalionApp::logo_random_waves()
+            );
+            if let Some(debug_frame) = &mut self.debug_frame {
+                *debug_frame += 1;
+                str_to_show.push_str(&format!("\n{:?}", debug_frame));
+            }
+            str_to_show
+        } else {
+            format!("jobs: {:?}", self.jobs)
+        };
+        let job_paragraph =
+            Paragraph::new(Text::styled(job_text, Style::default().fg(Color::Green)))
+                .wrap(Wrap { trim: false })
+                .block(job_block);
+        frame.render_widget(job_paragraph, area);
     }
 
     /// Ratatui render table

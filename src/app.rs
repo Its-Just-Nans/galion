@@ -3,6 +3,7 @@
 use clap::ArgAction;
 use clap::Parser;
 use home::home_dir;
+use rand::Rng;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::path::Path;
@@ -17,13 +18,15 @@ use crate::remote::RemoteConfiguration;
 
 /// Galion ASCII art
 /// This ASCII pic can be found at https://asciiart.website/art/4370
-pub(crate) const GALION_ASCII_ART: &str = r#"
-     _~
-  _~ )_)_~
-  )_))_))_)
-  _!__!__!_
-  \______t/
-~~~~~~~~~~~~~"#;
+const GALION: &str = r#"
+    _~
+ _~ )_)_~
+ )_))_))_)
+ _!__!__!_
+ \______t/"#;
+
+/// Waves ASCII art
+const WAVES: &str = "~~~~~~~~~~~~";
 
 /// remote configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
@@ -53,8 +56,8 @@ pub struct GalionArgs {
     hide_banner: bool,
 
     /// Should update the config file
-    #[arg(long, action=ArgAction::SetTrue)]
-    update_config: bool,
+    #[arg(long, action=ArgAction::SetFalse)]
+    no_update_config: bool,
 }
 
 /// Galion App
@@ -90,6 +93,29 @@ impl GalionApp {
             rclone: Default::default(),
             config_path,
         })
+    }
+
+    /// Galion logo
+    pub fn logo() -> String {
+        format!("{}\n{}", GALION, WAVES)
+    }
+
+    /// Galion logo with random waves
+    pub fn logo_random_waves() -> String {
+        let mut rng = rand::rng();
+
+        let roll: u32 = rng.random_range(0..=9);
+        let mut chars: Vec<char> = WAVES.chars().collect();
+        let len = chars.len();
+        if roll > 5 && len >= 3 {
+            let idx = rng.random_range(2..len - 3);
+            chars[idx] = '-';
+            chars[idx + 1] = '=';
+            chars[idx + 2] = '-';
+        }
+
+        let waves: String = chars.into_iter().collect();
+        format!("{}\n{}", GALION, waves)
     }
 
     /// Create new galion instance and init it
@@ -155,7 +181,7 @@ impl GalionApp {
             rclone.set_config_path(&rclone_config_path.to_string_lossy())?;
         }
         if !self.galion_args.hide_banner {
-            println!("{}", GALION_ASCII_ART);
+            println!("{}", Self::logo());
         }
         rclone.set_config_options(json!({
             "main": {
@@ -200,7 +226,7 @@ impl GalionApp {
             };
             self.config.remote_configurations.push(remote_config);
         }
-        if self.galion_args.update_config {
+        if self.galion_args.no_update_config {
             std::fs::write(&self.config_path, serde_json::to_string(&self.config)?)?;
         }
         if self.config.remote_configurations.is_empty() {

@@ -98,30 +98,3 @@ impl From<JoinError> for GalionError {
         }
     }
 }
-
-// #[derive(Debug, Default)]
-// pub struct ErrorManager {
-//     pub errors: Vec<AppError>,
-// }
-
-// impl ErrorManager {
-//     pub fn new() -> Self {
-//         Self {
-//             ..Default::default()
-//         }
-//     }
-
-//     pub fn add_error(&mut self, error: AppError) {
-//         self.errors.push(error);
-//     }
-
-//     pub fn handle_error<T>(&mut self, error: Result<T, impl Into<AppError>>) -> Option<T> {
-//         match error {
-//             Ok(value) => Some(value),
-//             Err(e) => {
-//                 self.add_error(e.into());
-//                 None
-//             }
-//         }
-//     }
-// }
