@@ -13,7 +13,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // docs.rs blocks network builds, so generate empty bindings for documentation
     if env::var("DOCS_RS").is_ok() {
-        // std::fs::write(out_path.join("bindings.rs"), "")?;
         return Ok(());
     }
 
