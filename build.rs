@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let out_dir = env::var("CARGO_MANIFEST_DIR")?;
     let out_path = PathBuf::from(&out_dir).join("src").join(lib_name);
 
-    // docs.rs blocks network builds, so generate empty bindings for documentation
+    // return early for docs.rs
     if env::var("DOCS_RS").is_ok() {
         return Ok(());
     }
