@@ -73,6 +73,14 @@ impl Rclone {
         Ok(value)
     }
 
+    /// rclone gc
+    /// # Errors
+    /// Fails if error with lib
+    pub fn rc_gc(&self) -> Result<(), GalionError> {
+        self.rpc("core/gc", json!({}))?;
+        Ok(())
+    }
+
     /// Get the rpc config
     /// # Errors
     /// Fails if error with lib

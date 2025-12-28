@@ -2,7 +2,6 @@
 
 use serde_json::Value;
 use std::{fmt, io, sync::Arc};
-use tokio::task::JoinError;
 
 /// Galion error wrapper
 #[derive(Debug)]
@@ -86,15 +85,6 @@ impl From<Value> for GalionError {
         match value.get("error") {
             Some(Value::String(error_message)) => Self::new(error_message.clone()),
             _ => Self::new(value.to_string()),
-        }
-    }
-}
-
-impl From<JoinError> for GalionError {
-    fn from(value: JoinError) -> Self {
-        Self {
-            message: value.to_string(),
-            source: Some(Arc::new(value)),
         }
     }
 }

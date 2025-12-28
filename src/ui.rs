@@ -17,24 +17,21 @@ use ratatui::{
     widgets::{Block, Paragraph},
 };
 use serde_json::{Value, json};
-use std::collections::HashMap;
-use std::io;
-use std::sync::mpsc::{Receiver, channel};
+use std::collections::{BTreeMap, HashMap};
+use std::fmt::Display;
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
+use std::{io, thread};
 use time::{OffsetDateTime, macros::format_description};
-use tokio::runtime::Runtime;
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::sync::mpsc::unbounded_channel;
-use tokio::task::JoinHandle;
-use tokio::time::interval;
 
 use crate::remote::RemoteConfiguration;
 use crate::{GalionApp, GalionError};
 
 /// rclone job type
-type JobsInfo = HashMap<u64, String>;
+type JobsInfo = BTreeMap<u64, JobState>;
 
 /// Job statut
+#[derive(Debug)]
 pub enum SyncJob {
     /// Exit
     Exit,
@@ -42,52 +39,98 @@ pub enum SyncJob {
     Sync(u64),
 }
 
+/// Job status from rclone
+#[derive(Debug, PartialEq, Clone, serde::Deserialize, serde::Serialize)]
+pub struct JobStatus {
+    /// success status
+    success: bool,
+    /// duration
+    duration: f64,
+}
+
+impl Display for JobStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "success: {}, duration: {}", self.success, self.duration)
+    }
+}
+
+/// Job state
+#[derive(Debug, PartialEq, Clone)]
+pub enum JobState {
+    /// Waiting to finish
+    Waiting,
+    /// Done
+    Done(JobStatus),
+}
+
+impl Display for JobState {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            JobState::Waiting => write!(f, "waiting"),
+            JobState::Done(job_status) => write!(f, "done: {}", job_status),
+        }
+    }
+}
+
 impl GalionApp {
     /// Run the galion ui
     /// # Errors
     /// Errors when ui errors
     pub fn run_tui(&self) -> Result<(), GalionError> {
-        let (tx_sync, mut rx_sync) = unbounded_channel::<SyncJob>();
-        let (tx_job, rx_jobs) = channel::<JobsInfo>();
-        let rt = Runtime::new()?;
+        let (tx_sync, rx_sync) = mpsc::channel();
+        let (tx_job, rx_jobs) = mpsc::channel();
         let remotes = self.remotes();
         let rclone_arc = self.rclone.clone();
-        let sync_handler: JoinHandle<Result<(), GalionError>> = rt.spawn(async move {
-            let mut interval = interval(Duration::from_millis(750));
+        let sync_handler: thread::JoinHandle<Result<(), GalionError>> = thread::spawn(move || {
+            let rclone = rclone_arc
+                .lock()
+                .map_err(|e| GalionError::new(format!("Mutex poisoned: {e}")))?;
+            let mut tracking_jobs = BTreeMap::new();
             loop {
-                interval.tick().await;
-                let rclone = rclone_arc
-                    .lock()
-                    .map_err(|e| GalionError::new(format!("Mutex poisoned: {e}")))?;
-                let job_list = match rclone.job_list() {
-                    Ok(list) => list,
-                    Err(_) => continue,
-                };
-                let mut hash_map: JobsInfo = HashMap::new();
-                for job_id in job_list.job_ids {
-                    if let Ok(res) = rclone.job_status(job_id)
-                        && let Some(Value::Bool(finished)) = res.get("finished")
-                        && !finished
-                    {
-                        hash_map.insert(job_id, res.to_string());
+                let is_jobs_waiting = tracking_jobs
+                    .values()
+                    .any(|value| *value == JobState::Waiting);
+                let res_job = if is_jobs_waiting {
+                    for (job_id, job_state) in tracking_jobs.clone() {
+                        if let JobState::Done(_) = job_state {
+                            continue;
+                        } else if let Ok(res) = rclone.job_status(job_id) {
+                            // println!("{:?}", res);
+                            if let Some(Value::Bool(finished)) = res.get("finished")
+                                && *finished
+                            {
+                                let job_status: JobStatus = serde_json::from_value(res)?;
+                                tracking_jobs.insert(job_id, JobState::Done(job_status));
+                            }
+                        }
                     }
-                }
-                tx_job
-                    .send(hash_map)
-                    .map_err(|e| GalionError::new(format!("Error send job status: {e}")))?;
-                if let Ok(_i) = rx_sync.try_recv() {
-                    match _i {
-                        SyncJob::Exit => {
+                    match tx_job.send(tracking_jobs.clone()) {
+                        Ok(a) => a,
+                        Err(_) => return Ok(()),
+                    };
+                    match rx_sync.try_recv() {
+                        Ok(job) => job,
+                        Err(std::sync::mpsc::TryRecvError::Empty) => continue,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => return Ok(()),
+                    }
+                } else {
+                    match rx_sync.recv() {
+                        Ok(job) => job,
+                        Err(_) => {
                             return Ok(());
                         }
-                        SyncJob::Sync(_job_id) => {
-                            let rclone_cloned = rclone_arc.clone();
-                            tokio::task::spawn(async move {
-                                let rclone = rclone_cloned.lock().map_err(|e| {
-                                    GalionError::new(format!("Mutex poisoned: {e}"))
-                                })?;
-                                rclone.rc_noop(json!({"_async": true}))
-                            });
+                    }
+                };
+                match res_job {
+                    SyncJob::Exit => {
+                        return Ok(());
+                    }
+                    SyncJob::Sync(_job_id) => {
+                        let job = rclone.rc_noop(json!({"_async": true}))?;
+                        if let Some(Value::Number(jobid)) = job.get("jobid")
+                            && let Some(job_id) = jobid.as_u64()
+                        {
+                            tracking_jobs.insert(job_id, JobState::Waiting);
                         }
                     }
                 }
@@ -98,10 +141,14 @@ impl GalionApp {
         let app_result = TuiApp::new(remotes, rx_jobs, tx_sync)
             .run(&mut terminal)
             .map_err(|e| GalionError::new(e.to_string()));
-        sync_handler.abort();
         ratatui::restore();
+        let thread_result = sync_handler
+            .join()
+            .map_err(|_e| "Error joining the thread")?; // join error
+        thread_result?; // thread error
         println!("  ~Galion~"); // Clean exit terminal
         app_result
+        // Ok(())
     }
 }
 
@@ -113,7 +160,7 @@ pub struct TuiApp {
     /// receiver of job
     pub rx_jobs: Receiver<JobsInfo>,
     /// sender of sync job
-    pub tx_sync: UnboundedSender<SyncJob>,
+    pub tx_sync: Sender<SyncJob>,
     /// Map of jobs
     pub jobs: JobsInfo,
     /// should exit
@@ -179,11 +226,14 @@ fn constraint_len_calculator(items: &[RemoteConfiguration]) -> (u16, u16, u16) {
 }
 
 impl TuiApp {
+    /// UI poll time
+    const REFRESH: Duration = Duration::from_millis(500);
+
     /// Tui App
     pub fn new(
         remotes: Vec<RemoteConfiguration>,
         rx_jobs: Receiver<JobsInfo>,
-        tx_sync: UnboundedSender<SyncJob>,
+        tx_sync: Sender<SyncJob>,
     ) -> Self {
         let longest_item_lens = constraint_len_calculator(&remotes);
         let remotes_len = remotes.len();
@@ -231,7 +281,7 @@ impl TuiApp {
 
     /// updates the application's state based on user input
     fn handle_events(&mut self) -> io::Result<()> {
-        if poll(Duration::from_millis(1000))? {
+        if poll(Self::REFRESH)? {
             match event::read()? {
                 // it's important to check that the event is a key press event as
                 // crossterm also emits key release and repeat events on Windows.
@@ -300,8 +350,8 @@ impl TuiApp {
     /// exit
     fn exit(&mut self) {
         self.exit = true;
-        if let Err(_e) = self.tx_sync.send(SyncJob::Exit) {
-            // println!("{}", _e); //TODO
+        if let Err(e) = self.tx_sync.send(SyncJob::Exit) {
+            println!("{}", e);
         }
     }
 
@@ -311,7 +361,11 @@ impl TuiApp {
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(1), Constraint::Length(20)])
             .areas(area);
-        let left_text = Line::from("qsdfqs");
+        let left_text = Line::from(concat!(
+            env!("CARGO_PKG_NAME"),
+            "@",
+            env!("CARGO_PKG_VERSION")
+        ));
         let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
         let format = format_description!("[year]-[month]-[day] [hour]:[minute]:[second]");
         let date_str = now.format(&format).unwrap();
@@ -341,7 +395,12 @@ impl TuiApp {
             }
             str_to_show
         } else {
-            format!("jobs: {:?}", self.jobs)
+            let mut str_to_show = String::new();
+            // Show latest jobs first
+            for (one_job_id, state) in self.jobs.iter().rev() {
+                str_to_show.push_str(&format!("job {}: {}\n", one_job_id, state));
+            }
+            str_to_show
         };
         let job_paragraph =
             Paragraph::new(Text::styled(job_text, Style::default().fg(Color::Green)))

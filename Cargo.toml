@@ -15,8 +15,7 @@ homepage = "https://github.com/Its-Just-Nans/galion"
 home = "0.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-ratatui = "0.29"
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time"] }
+ratatui = "0.30"
 rand = "0.9.2"
 time = { version = "0.3", features = ["macros", "local-offset", "formatting"] }
 clap = { version = "4.5.53", features = ["derive"] }
