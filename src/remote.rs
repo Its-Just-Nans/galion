@@ -26,12 +26,12 @@ impl Display for ConfigOrigin {
 /// Remote Configuration
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct RemoteConfiguration {
-    /// local path
-    pub local_path: Option<String>,
     /// remote name in the config
     pub remote_name: String,
+    /// local path
+    pub remote_src: Option<String>,
     /// remote path
-    pub remote_path: Option<String>,
+    pub remote_dest: Option<String>,
 
     /// config origin
     #[serde(skip)]
@@ -43,8 +43,8 @@ impl RemoteConfiguration {
     pub fn to_table_row(&self) -> [String; 3] {
         [
             format!("{}\n{}", self.remote_name, self.config_origin),
-            self.local_path.clone().unwrap_or_default(),
-            self.remote_path.clone().unwrap_or_default(),
+            self.remote_src.clone().unwrap_or_default(),
+            self.remote_dest.clone().unwrap_or_default(),
         ]
     }
 }

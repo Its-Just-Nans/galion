@@ -227,14 +227,14 @@ impl GalionApp {
                 continue;
             }
             let remote_conf = rclone.get_remote(&rclone_remote_name)?;
-            let remote_path = remote_conf
+            let remote_dest = remote_conf
                 .get("remote")
                 .and_then(|v| v.as_str())
                 .map(String::from);
             let remote_config = RemoteConfiguration {
                 remote_name: rclone_remote_name,
-                local_path: None,
-                remote_path,
+                remote_src: None,
+                remote_dest,
                 config_origin: ConfigOrigin::RcloneConfig,
             };
             self.config.remote_configurations.push(remote_config);

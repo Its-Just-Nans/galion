@@ -27,7 +27,7 @@ use crate::remote::{ConfigOrigin, RemoteConfiguration};
 use crate::{GalionApp, GalionError};
 
 /// rclone job type
-type JobsInfo = BTreeMap<u64, JobState>;
+type JobsList = BTreeMap<u64, JobState>;
 
 /// Job statut
 #[derive(Debug)]
@@ -35,7 +35,7 @@ pub enum ResultJob {
     /// Exit
     Exit,
     /// Sync
-    Sync(JobsInfo),
+    Sync(JobsList),
 }
 
 /// Job statut
@@ -44,7 +44,7 @@ pub enum SyncJob {
     /// Exit
     Exit,
     /// Sync
-    Sync(u64),
+    Sync((String, String, String)),
 }
 
 /// Job status from rclone
@@ -109,7 +109,7 @@ impl GalionApp {
         let rclone_arc = self.rclone.clone();
         let sync_handler: thread::JoinHandle<Result<(), GalionError>> = thread::spawn(move || {
             let thread_loop = || -> Result<(), GalionError> {
-                let mut tracking_jobs = JobsInfo::new();
+                let mut tracking_jobs = JobsList::new();
                 let rclone = rclone_arc
                     .lock()
                     .map_err(|e| GalionError::new(format!("Mutex poisoned: {e}")))?;
@@ -198,11 +198,17 @@ impl GalionApp {
 
 /// Input string state
 #[derive(Debug)]
-struct InputString {
-    /// input string
-    input: String,
-    /// Position of cursor in the editor area.
+struct EditString {
+    /// idx edit string
+    idx_string: usize,
+    /// Position of cursor in the editor area
     character_index: usize,
+    /// Remote name
+    edit_remote_name: String,
+    /// Remote src
+    edit_remote_src: String,
+    /// Remote destination
+    edit_remote_dest: String,
 }
 
 /// Galion Tui mode
@@ -215,14 +221,7 @@ enum TuiMode {
     /// Delete mode - confirmation
     Delete,
     /// Edit string mode
-    EditString {
-        /// Remote name
-        edit_remote_name: InputString,
-        /// Remote src
-        edit_remote_src: InputString,
-        /// Remote destination
-        edit_remote_dest: InputString,
-    },
+    EditString(EditString),
 }
 
 /// Galion Tui app
@@ -235,7 +234,7 @@ pub struct TuiApp<'a> {
     /// sender of sync job
     pub tx_to_thread: Sender<SyncJob>,
     /// Map of jobs
-    pub jobs: JobsInfo,
+    pub jobs: JobsList,
     /// should exit
     exit: bool,
     /// longest item length
@@ -383,6 +382,76 @@ impl<'a> TuiApp<'a> {
                 frame.render_widget(Clear, area); //this clears out the background
                 frame.render_widget(error_msg_widget, area);
             }
+            TuiMode::EditString(edit_string) => {
+                let vertical = Layout::vertical([Constraint::Length(8)]).flex(Flex::Center);
+                let horizontal =
+                    Layout::horizontal([Constraint::Percentage(30)]).flex(Flex::Center);
+                let [area] = vertical.areas(frame.area());
+                let [area] = horizontal.areas(area);
+                frame.render_widget(Clear, area); //this clears out the background
+                let block = Block::bordered().title("Edit");
+                let inner_block_area = block.inner(area);
+                frame.render_widget(block, area);
+                let [
+                    area_title_name,
+                    area_name,
+                    area_title_src,
+                    area_src,
+                    area_title_dest,
+                    area_dest,
+                ] = Layout::default()
+                    .direction(Direction::Vertical)
+                    .constraints([
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                        Constraint::Length(1),
+                    ])
+                    .areas(inner_block_area);
+                let title_name =
+                    Paragraph::new("Remote name").style(match edit_string.idx_string {
+                        0 => Style::default().fg(Color::Yellow),
+                        _ => Style::default(),
+                    });
+                let input_name =
+                    Paragraph::new(edit_string.edit_remote_name.as_str()).style(match edit_string
+                        .idx_string
+                    {
+                        0 => Style::default().fg(Color::Yellow),
+                        _ => Style::default(),
+                    });
+                frame.render_widget(title_name, area_title_name);
+                frame.render_widget(input_name, area_name);
+                let title_src =
+                    Paragraph::new("Remote source").style(match edit_string.idx_string {
+                        1 => Style::default().fg(Color::Yellow),
+                        _ => Style::default(),
+                    });
+                let input_src = Paragraph::new(edit_string.edit_remote_src.as_str()).style(
+                    match edit_string.idx_string {
+                        1 => Style::default().fg(Color::Yellow),
+                        _ => Style::default(),
+                    },
+                );
+                frame.render_widget(title_src, area_title_src);
+                frame.render_widget(input_src, area_src);
+                let title_dest =
+                    Paragraph::new("Remote destination").style(match edit_string.idx_string {
+                        2 => Style::default().fg(Color::Yellow),
+                        _ => Style::default(),
+                    });
+                let input_dest =
+                    Paragraph::new(edit_string.edit_remote_dest.as_str()).style(match edit_string
+                        .idx_string
+                    {
+                        2 => Style::default().fg(Color::Yellow),
+                        _ => Style::default(),
+                    });
+                frame.render_widget(title_dest, area_title_dest);
+                frame.render_widget(input_dest, area_dest);
+            }
             _ => {}
         }
     }
@@ -422,15 +491,20 @@ impl<'a> TuiApp<'a> {
                 return;
             }
         };
-        if current_selected_job.local_path.is_none() {
-            self.new_error("Remote doesn't have a local path - press e for edit");
+        let Some(remote_src) = &current_selected_job.remote_src else {
+            self.new_error("Remote doesn't have a source - press e for edit");
             return;
-        }
-        if current_selected_job.remote_path.is_none() {
-            self.new_error("Remote doesn't have a remote path - press e for edit");
+        };
+        let Some(remote_dest) = &current_selected_job.remote_dest else {
+            self.new_error("Remote doesn't have a destination - press e for edit");
             return;
-        }
-        if let Err(_e) = self.tx_to_thread.send(SyncJob::Sync(0)) {
+        };
+        let sync_job = (
+            current_selected_job.remote_name.clone(),
+            remote_src.clone(),
+            remote_dest.clone(),
+        );
+        if let Err(_e) = self.tx_to_thread.send(SyncJob::Sync(sync_job)) {
             // ignore
         }
     }
@@ -465,7 +539,7 @@ impl<'a> TuiApp<'a> {
             }
             _ => {}
         };
-        match self.mode {
+        match &mut self.mode {
             TuiMode::Normal => match key_event.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
                     self.exit();
@@ -518,23 +592,13 @@ impl<'a> TuiApp<'a> {
                     if let Some(idx) = self.state.selected()
                         && let Some(config) = self.app.remotes().get(idx)
                     {
-                        let edit_remote_name = InputString {
-                            input: config.remote_name.clone(),
+                        self.mode = TuiMode::EditString(EditString {
+                            idx_string: 0,
                             character_index: 0,
-                        };
-                        let edit_remote_src = InputString {
-                            input: config.local_path.clone().unwrap_or_default(),
-                            character_index: 0,
-                        };
-                        let edit_remote_dest = InputString {
-                            input: config.remote_path.clone().unwrap_or_default(),
-                            character_index: 0,
-                        };
-                        self.mode = TuiMode::EditString {
-                            edit_remote_name,
-                            edit_remote_src,
-                            edit_remote_dest,
-                        };
+                            edit_remote_name: config.remote_name.clone(),
+                            edit_remote_src: config.remote_src.clone().unwrap_or_default(),
+                            edit_remote_dest: config.remote_dest.clone().unwrap_or_default(),
+                        });
                     } else {
                         self.new_error("Cannot edit");
                     }
@@ -556,15 +620,33 @@ impl<'a> TuiApp<'a> {
                 }
                 _ => {}
             },
-            TuiMode::EditString { .. } => match key_event.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    self.mode = TuiMode::Normal; // TODO
+            TuiMode::EditString(edit_string) => match key_event.code {
+                KeyCode::Esc => {
+                    self.mode = TuiMode::Normal;
                 }
-                // KeyCode::Enter => self.submit_message(),
+                KeyCode::Down => {
+                    if edit_string.idx_string != 2 {
+                        edit_string.idx_string += 1;
+                        edit_string.character_index = 0; // TODO idx of string
+                    }
+                }
+                KeyCode::Up => {
+                    if edit_string.idx_string != 0 {
+                        edit_string.idx_string -= 1;
+                        edit_string.character_index = 0; // TODO idx of string
+                    }
+                }
+                KeyCode::Enter => {
+                    todo!()
+                }
+                KeyCode::Tab => {
+                    if edit_string.idx_string != 2 {
+                        edit_string.idx_string += 1;
+                        edit_string.character_index = 0; // TODO idx of string
+                    }
+                }
                 // KeyCode::Char(to_insert) => self.enter_char(to_insert),
                 // KeyCode::Backspace => self.delete_char(),
-                // KeyCode::Left => self.move_cursor_left(),
-                // KeyCode::Right => self.move_cursor_right(),
                 _ => {}
             },
         }
@@ -592,10 +674,10 @@ impl<'a> TuiApp<'a> {
             Color::Black
         };
         let text_helper = match &self.mode {
-            TuiMode::Error(_e) => vec!["(q)".bold(), " close error".into()],
+            TuiMode::Error(_e) => vec!["(esc)".bold(), " close error".into()],
             TuiMode::Normal => {
                 vec![
-                    "(q)".bold(),
+                    "(esc)".bold(),
                     " leave | ".into(),
                     "(arrow_up/arrow_down)".bold(),
                     " select | ".into(),
@@ -607,7 +689,14 @@ impl<'a> TuiApp<'a> {
                     " edit".into(),
                 ]
             }
-            TuiMode::EditString { .. } => vec!["(q)".bold(), " leave".into()],
+            TuiMode::EditString(_) => vec![
+                "(esc)".bold(),
+                " leave | ".into(),
+                "(arrow_up/arrow_down)".bold(),
+                " select | ".into(),
+                "(enter)".bold(),
+                " save".into(),
+            ],
             _ => todo!(),
         };
         let left_text = Line::from(text_helper);
@@ -634,10 +723,9 @@ impl<'a> TuiApp<'a> {
         let job_text = if self.jobs.is_empty() {
             let mut str_to_show = format!(
                 "{}\nNothing to do, just sailing",
-                if let TuiMode::Error(_err_str) = &self.mode {
-                    GalionApp::logo_waves()
-                } else {
-                    GalionApp::logo_random_waves()
+                match self.mode {
+                    TuiMode::Normal => GalionApp::logo_random_waves(),
+                    _ => GalionApp::logo_waves(),
                 }
             );
             if let Some(debug_frame) = &mut self.debug_frame {
