@@ -146,10 +146,10 @@ impl Rclone {
     /// Get on remote
     /// # Errors
     /// Fails if error with lib
-    pub fn get_remote(&self, remote_name: &str) -> Result<String, GalionError> {
+    pub fn get_remote(&self, remote_name: &str) -> Result<Value, GalionError> {
         let res = self.rpc("config/get", json!({"name": remote_name}))?;
-        // let value = serde_json::from_str::<Value>(&res)?;
-        Ok(res)
+        let value = serde_json::from_str::<Value>(&res)?;
+        Ok(value)
     }
 
     /// Trigger a sync job

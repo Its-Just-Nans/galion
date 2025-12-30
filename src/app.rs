@@ -16,23 +16,11 @@ use crate::librclone::rclone::Rclone;
 use crate::remote::ConfigOrigin;
 use crate::remote::RemoteConfiguration;
 
-/// Galion ASCII art
-/// This ASCII pic can be found at https://asciiart.website/art/4370
-const GALION: &str = r#"
-    _~
- _~ )_)_~
- )_))_))_)
- _!__!__!_
- \______t/"#;
-
-/// Waves ASCII art
-const WAVES: &str = "~~~~~~~~~~~~";
-
 /// remote configuration
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 pub struct AppConfiguration {
     /// list of remote configuration
-    remote_configurations: Vec<RemoteConfiguration>,
+    pub(crate) remote_configurations: Vec<RemoteConfiguration>,
 }
 
 /// Galion arguments parsing
@@ -53,11 +41,15 @@ pub struct GalionArgs {
 
     /// Full path to the configuration file
     #[arg(long, action=ArgAction::SetTrue)]
-    hide_banner: bool,
+    pub(crate) hide_banner: bool,
 
-    /// Should update the config file
-    #[arg(long, action=ArgAction::SetFalse)]
-    no_update_config: bool,
+    /// Should update the config file (false)
+    #[arg(long, action=ArgAction::SetTrue)]
+    auto_update_config: bool,
+
+    /// Ignore fuplicate remote
+    #[arg(long, action=ArgAction::SetTrue)]
+    ignore_duplicate_remote: bool,
 }
 
 /// Galion App
@@ -66,17 +58,29 @@ pub struct GalionApp {
     /// config path
     config_path: PathBuf,
     /// args
-    galion_args: GalionArgs,
+    pub(crate) galion_args: GalionArgs,
     /// config
-    config: AppConfiguration,
+    pub(crate) config: AppConfiguration,
     /// rclone instance
     pub rclone: Arc<Mutex<Rclone>>,
 }
 
-/// app name
-const APP_NAME: &str = "galion";
-
 impl GalionApp {
+    /// app name
+    const APP_NAME: &str = "galion";
+
+    /// Galion ASCII art
+    /// This ASCII pic can be found at https://asciiart.website/art/4370
+    const GALION: &str = r#"
+    _~
+ _~ )_)_~
+ )_))_))_)
+ _!__!__!_
+ \______t/"#;
+
+    /// Waves ASCII art
+    pub(crate) const WAVES: &str = "~~~~~~~~~~~~";
+
     /// Create new galion instance
     /// # Errors
     /// Error if fails
@@ -97,7 +101,7 @@ impl GalionApp {
 
     /// Galion logo
     pub fn logo() -> String {
-        format!("{}\n{}", GALION, WAVES)
+        format!("{}\n{}", Self::GALION, Self::WAVES)
     }
 
     /// Galion logo with random waves
@@ -105,7 +109,7 @@ impl GalionApp {
         let mut rng = rand::rng();
 
         let roll: u32 = rng.random_range(0..=9);
-        let mut chars: Vec<char> = WAVES.chars().collect();
+        let mut chars: Vec<char> = Self::WAVES.chars().collect();
         let len = chars.len();
         if roll > 5 && len >= 3 {
             let idx = rng.random_range(2..len - 3);
@@ -115,7 +119,12 @@ impl GalionApp {
         }
 
         let waves: String = chars.into_iter().collect();
-        format!("{}\n{}", GALION, waves)
+        format!("{}\n{}", Self::GALION, waves)
+    }
+
+    /// Logo with waves
+    pub fn logo_waves() -> String {
+        format!("{}\n{}", Self::GALION, Self::WAVES)
     }
 
     /// Create new galion instance and init it
@@ -148,7 +157,7 @@ impl GalionApp {
     pub fn get_default_config_path() -> Result<PathBuf, GalionError> {
         let mut path = home_dir().ok_or("Unable to get home directory")?;
         path.push(".config");
-        path.push(APP_NAME);
+        path.push(Self::APP_NAME);
         path.push("galion.json");
         Ok(path)
     }
@@ -207,27 +216,31 @@ impl GalionApp {
             )));
         }
         let list_remotes = rclone.list_remotes()?;
-        for remote in list_remotes {
+        for rclone_remote_name in list_remotes {
             if self
                 .config
                 .remote_configurations
                 .iter()
-                .any(|r| r.remote_name == remote)
+                .any(|r| r.remote_name == rclone_remote_name)
+                && self.galion_args.ignore_duplicate_remote
             {
                 continue;
             }
-            let remote_conf = rclone.get_remote(&remote)?;
-            println!("{}", remote_conf);
+            let remote_conf = rclone.get_remote(&rclone_remote_name)?;
+            let remote_path = remote_conf
+                .get("remote")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             let remote_config = RemoteConfiguration {
-                remote_name: remote,
+                remote_name: rclone_remote_name,
                 local_path: None,
-                remote_path: None,
+                remote_path,
                 config_origin: ConfigOrigin::RcloneConfig,
             };
             self.config.remote_configurations.push(remote_config);
         }
-        if self.galion_args.no_update_config {
-            std::fs::write(&self.config_path, serde_json::to_string(&self.config)?)?;
+        if self.galion_args.auto_update_config {
+            self.save_config()?;
         }
         if self.config.remote_configurations.is_empty() {
             return Err(GalionError::new(format!(
@@ -239,9 +252,27 @@ impl GalionApp {
         Ok(())
     }
 
+    /// Save galion config
+    /// # Errors
+    /// Fails if write to file fails
+    pub fn save_config(&self) -> Result<(), GalionError> {
+        let remotes_to_save = self
+            .config
+            .remote_configurations
+            .iter()
+            .filter(|c| c.config_origin == ConfigOrigin::GalionConfig)
+            .cloned()
+            .collect::<Vec<RemoteConfiguration>>();
+        let config = AppConfiguration {
+            remote_configurations: remotes_to_save,
+        };
+        std::fs::write(&self.config_path, serde_json::to_string(&config)?)?;
+        Ok(())
+    }
+
     /// Returns the remotes
-    pub fn remotes(&self) -> Vec<RemoteConfiguration> {
-        self.config.remote_configurations.clone()
+    pub fn remotes(&self) -> &[RemoteConfiguration] {
+        &self.config.remote_configurations
     }
 
     /// Quit app
@@ -261,7 +292,8 @@ impl GalionApp {
 
 impl Drop for GalionApp {
     fn drop(&mut self) {
-        let mut rclone = self.rclone.lock().unwrap();
-        rclone.finalize();
+        if let Ok(rclone) = &mut self.rclone.lock() {
+            rclone.finalize();
+        }
     }
 }
