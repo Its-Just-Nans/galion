@@ -193,8 +193,11 @@ impl GalionApp {
                             return Ok(());
                         }
                         SyncJob::Sync(sync_data_received) => {
-                            let job =
-                                rclone.sync(&sync_data_received.src, &sync_data_received.dest, true)?;
+                            let job = rclone.sync(
+                                &sync_data_received.src,
+                                &sync_data_received.dest,
+                                true,
+                            )?;
                             if let Some(Value::Number(jobid)) = job.get("jobid")
                                 && let Some(job_id) = jobid.as_u64()
                             {
