@@ -43,6 +43,5 @@ pub fn galion_main() -> Result<(), GalionError> {
     let args: Vec<String> = std::env::args().collect();
     let mut app = GalionApp::try_new_init(&args)?;
     app.run_tui()?;
-    app.quit()?;
     Ok(())
 }

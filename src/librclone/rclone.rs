@@ -14,6 +14,13 @@ pub struct Rclone {
 }
 
 impl Rclone {
+    /// Create a new rclone instance and initialize it
+    pub fn new() -> Self {
+        let mut rclone = Self::default();
+        rclone.initialize();
+        rclone
+    }
+
     /// initialize lib
     pub fn initialize(&mut self) {
         if !self.librclone_is_initialized {

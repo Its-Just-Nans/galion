@@ -24,6 +24,7 @@ use std::time::Duration;
 use std::{io, thread};
 use time::{OffsetDateTime, macros::format_description};
 
+use crate::app::GalionConfig;
 use crate::remote::{ConfigOrigin, EditRemote, RemoteConfiguration};
 use crate::{GalionApp, GalionError};
 
@@ -134,109 +135,113 @@ impl GalionApp {
     /// # Errors
     /// Errors when ui errors
     pub fn run_tui(&mut self) -> Result<(), GalionError> {
-        let (tx_to_thread, rx_to_ui) = mpsc::channel();
-        let (tx_to_ui, rx_from_thread) = mpsc::channel();
-        let rclone_arc = self.rclone.clone();
-        let sync_handler: thread::JoinHandle<Result<(), GalionError>> = thread::spawn(move || {
-            let thread_loop = || -> Result<(), GalionError> {
-                let mut tracking_jobs = JobsList::new();
-                let rclone = rclone_arc
-                    .lock()
-                    .map_err(|e| GalionError::new(format!("Mutex poisoned: {e}")))?;
-                loop {
-                    let is_jobs_waiting = tracking_jobs.values().any(|value| value.is_waiting());
-                    let res_job = if is_jobs_waiting {
-                        for (job_sync_data, job_state) in tracking_jobs.clone() {
-                            if let JobState::Done(_) = job_state {
-                                continue;
-                            } else if let Ok(value_job_status) =
-                                rclone.job_status(job_sync_data.job_id)
-                            {
-                                // println!("{:?}", value_job_status);
-                                let is_finished = value_job_status.get("finished").cloned();
-                                let debug_str = value_job_status.to_string();
-                                let mut job_status: JobStatus =
-                                    serde_json::from_value(value_job_status)?;
-                                job_status.debug_str = Some(debug_str);
-                                if let Some(Value::Bool(finished)) = is_finished
-                                    && finished
-                                {
-                                    tracking_jobs.insert(job_sync_data, JobState::Done(job_status));
-                                } else {
-                                    tracking_jobs
-                                        .insert(job_sync_data, JobState::Pending(job_status));
+        // thread scope assert that the thread will not outlive the function
+        thread::scope(|s| {
+            let rclone = &self.rclone;
+            let (tx_to_thread, rx_to_ui) = mpsc::channel();
+            let (tx_to_ui, rx_from_thread) = mpsc::channel();
+            let sync_handler: thread::ScopedJoinHandle<'_, Result<(), GalionError>> =
+                s.spawn(move || {
+                    let thread_loop = || -> Result<(), GalionError> {
+                        let mut tracking_jobs = JobsList::new();
+                        loop {
+                            let is_jobs_waiting =
+                                tracking_jobs.values().any(|value| value.is_waiting());
+                            let res_job = if is_jobs_waiting {
+                                for (job_sync_data, job_state) in tracking_jobs.clone() {
+                                    if let JobState::Done(_) = job_state {
+                                        continue;
+                                    } else if let Ok(value_job_status) =
+                                        rclone.job_status(job_sync_data.job_id)
+                                    {
+                                        // println!("{:?}", value_job_status);
+                                        let is_finished = value_job_status.get("finished").cloned();
+                                        let debug_str = value_job_status.to_string();
+                                        let mut job_status: JobStatus =
+                                            serde_json::from_value(value_job_status)?;
+                                        job_status.debug_str = Some(debug_str);
+                                        if let Some(Value::Bool(finished)) = is_finished
+                                            && finished
+                                        {
+                                            tracking_jobs
+                                                .insert(job_sync_data, JobState::Done(job_status));
+                                        } else {
+                                            tracking_jobs.insert(
+                                                job_sync_data,
+                                                JobState::Pending(job_status),
+                                            );
+                                        }
+                                    }
+                                }
+                                match tx_to_ui.send(ResultJob::Sync(tracking_jobs.clone())) {
+                                    Ok(a) => a,
+                                    Err(_) => return Ok(()),
+                                };
+                                match rx_to_ui.try_recv() {
+                                    Ok(job) => job,
+                                    Err(mpsc::TryRecvError::Empty) => {
+                                        sleep(Duration::from_millis(500));
+                                        continue;
+                                    }
+                                    Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                                }
+                            } else {
+                                match rx_to_ui.recv() {
+                                    Ok(job) => job,
+                                    Err(_) => {
+                                        return Ok(());
+                                    }
+                                }
+                            };
+                            match res_job {
+                                SyncJob::Exit => {
+                                    return Ok(());
+                                }
+                                SyncJob::Sync(sync_data_received) => {
+                                    let job = rclone.sync(
+                                        &sync_data_received.src,
+                                        &sync_data_received.dest,
+                                        true,
+                                    )?;
+                                    if let Some(Value::Number(jobid)) = job.get("jobid")
+                                        && let Some(job_id) = jobid.as_u64()
+                                    {
+                                        let mut sync_data = sync_data_received.clone();
+                                        sync_data.job_id = job_id;
+                                        tracking_jobs.insert(sync_data, JobState::Sent);
+                                    }
                                 }
                             }
                         }
-                        match tx_to_ui.send(ResultJob::Sync(tracking_jobs.clone())) {
-                            Ok(a) => a,
-                            Err(_) => return Ok(()),
-                        };
-                        match rx_to_ui.try_recv() {
-                            Ok(job) => job,
-                            Err(mpsc::TryRecvError::Empty) => {
-                                sleep(Duration::from_millis(500));
-                                continue;
-                            }
-                            Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
-                        }
-                    } else {
-                        match rx_to_ui.recv() {
-                            Ok(job) => job,
-                            Err(_) => {
-                                return Ok(());
-                            }
-                        }
                     };
-                    match res_job {
-                        SyncJob::Exit => {
-                            return Ok(());
-                        }
-                        SyncJob::Sync(sync_data_received) => {
-                            let job = rclone.sync(
-                                &sync_data_received.src,
-                                &sync_data_received.dest,
-                                true,
-                            )?;
-                            if let Some(Value::Number(jobid)) = job.get("jobid")
-                                && let Some(job_id) = jobid.as_u64()
-                            {
-                                let mut sync_data = sync_data_received.clone();
-                                sync_data.job_id = job_id;
-                                tracking_jobs.insert(sync_data, JobState::Sent);
+                    match thread_loop() {
+                        Ok(()) => Ok(()),
+                        Err(err) => {
+                            eprintln!("Background thread crashed: {}", err);
+                            if let Err(e) = tx_to_ui.send(ResultJob::Exit) {
+                                eprintln!("Failed to stop UI {e}")
                             }
+                            Err(GalionError::new(format!(
+                                "Background thread crashed: {err}"
+                            )))
                         }
                     }
-                }
-            };
-            match thread_loop() {
-                Ok(()) => Ok(()),
-                Err(err) => {
-                    eprintln!("Background thread crashed: {}", err);
-                    if let Err(e) = tx_to_ui.send(ResultJob::Exit) {
-                        eprintln!("Failed to stop UI {e}")
-                    }
-                    Err(GalionError::new(format!(
-                        "Background thread crashed: {err}"
-                    )))
-                }
-            }
-        });
+                });
 
-        let mut terminal = ratatui::init();
-        let app_result = TuiApp::new(self, rx_from_thread, tx_to_thread)
-            .run(&mut terminal)
-            .map_err(|e| GalionError::new(e.to_string()));
-        ratatui::restore(); // Clean exit terminal
-        let thread_result = sync_handler
-            .join()
-            .map_err(|_e| "Error joining the thread")?; // join error
-        thread_result?; // thread error
-        if !self.galion_args.hide_banner {
-            println!("  ~Galion~");
-        }
-        app_result
-        // Ok(())
+            let mut terminal = ratatui::init();
+            let app_result = TuiApp::new(&mut self.config, rx_from_thread, tx_to_thread)
+                .run(&mut terminal)
+                .map_err(|e| GalionError::new(e.to_string()));
+            ratatui::restore(); // Clean exit terminal
+            let thread_result = sync_handler
+                .join()
+                .map_err(|_e| "Error joining the thread")?; // join error
+            thread_result?; // thread error
+            if !self.galion_args.hide_banner {
+                println!("  ~Galion~");
+            }
+            app_result
+        })
     }
 }
 
@@ -257,7 +262,7 @@ enum TuiMode {
 #[derive(Debug)]
 pub struct TuiApp<'a> {
     /// app
-    app: &'a mut GalionApp,
+    app_config: &'a mut GalionConfig,
     /// receiver of job
     pub rx_from_thread: Receiver<ResultJob>,
     /// sender of sync job
@@ -334,15 +339,15 @@ impl<'a> TuiApp<'a> {
 
     /// Tui App
     pub fn new(
-        app: &'a mut GalionApp,
+        app_config: &'a mut GalionConfig,
         rx_from_thread: Receiver<ResultJob>,
         tx_to_thread: Sender<SyncJob>,
     ) -> Self {
-        let remotes = app.remotes();
+        let remotes = app_config.remotes();
         let longest_item_lens = constraint_len_calculator(remotes);
         let remotes_len = remotes.len();
         TuiApp {
-            app,
+            app_config,
             rx_from_thread,
             tx_to_thread,
             jobs: Default::default(),
@@ -532,7 +537,7 @@ impl<'a> TuiApp<'a> {
     /// send a job
     fn send_job(&mut self) {
         let current_selected_job = match self.state.selected() {
-            Some(idx) => match self.app.remotes().get(idx) {
+            Some(idx) => match self.app_config.remotes().get(idx) {
                 Some(remote) => remote,
                 None => {
                     self.new_error(format!("No remote configuration at index {idx} in remotes"));
@@ -581,7 +586,7 @@ impl<'a> TuiApp<'a> {
                 KeyCode::Right => self.send_job(),
                 KeyCode::Char('r') | KeyCode::Delete | KeyCode::Backspace => {
                     if let Some(idx) = self.state.selected()
-                        && let Some(config) = self.app.remotes().get(idx)
+                        && let Some(config) = self.app_config.remotes().get(idx)
                     {
                         if config.config_origin == ConfigOrigin::RcloneConfig {
                             self.new_error("Cannot delete a remote from the rclone config");
@@ -594,13 +599,12 @@ impl<'a> TuiApp<'a> {
                 }
                 KeyCode::Char('d') => {
                     if let Some(idx) = self.state.selected()
-                        && let Some(config) = self.app.remotes().get(idx)
+                        && let Some(config) = self.app_config.remotes().get(idx)
                     {
                         if config.config_origin == ConfigOrigin::RcloneConfig {
                             self.new_error("Cannot duplicate a rclone config - try to edit it");
                         } else {
-                            self.app
-                                .config
+                            self.app_config
                                 .remote_configurations
                                 .insert(0, config.clone());
                         }
@@ -612,8 +616,8 @@ impl<'a> TuiApp<'a> {
                     // Select new row
                     let i = match self.state.selected() {
                         Some(i) => {
-                            if i >= self.app.remotes().len() - 1 {
-                                self.app.remotes().len() - 1
+                            if i >= self.app_config.remotes().len() - 1 {
+                                self.app_config.remotes().len() - 1
                             } else {
                                 i + 1
                             }
@@ -640,7 +644,7 @@ impl<'a> TuiApp<'a> {
                 }
                 KeyCode::Char('e') => {
                     if let Some(idx) = self.state.selected()
-                        && let Some(config) = self.app.remotes().get(idx)
+                        && let Some(config) = self.app_config.remotes().get(idx)
                     {
                         self.mode = TuiMode::EditString(EditRemote {
                             idx_string: 0,
@@ -667,14 +671,14 @@ impl<'a> TuiApp<'a> {
                 }
                 KeyCode::Char('y') | KeyCode::Enter => {
                     if let Some(idx) = self.state.selected()
-                        && let Some(config) = self.app.remotes().get(idx)
+                        && let Some(config) = self.app_config.remotes().get(idx)
                     {
                         if config.config_origin == ConfigOrigin::RcloneConfig {
                             self.new_error("Cannot delete a remote from the rclone config");
                             return;
                         }
-                        self.app.config.remote_configurations.remove(idx);
-                        if let Err(e) = self.app.save_config() {
+                        self.app_config.remote_configurations.remove(idx);
+                        if let Err(e) = self.app_config.save_config() {
                             self.new_error(format!(
                                 "Failed to save the config after remote deletion {e}"
                             ));
@@ -704,14 +708,14 @@ impl<'a> TuiApp<'a> {
                 KeyCode::Enter => {
                     let new_remote = edit_string.finish();
                     if let Some(idx) = self.state.selected()
-                        && let Some(config) = self.app.config.remote_configurations.get_mut(idx)
+                        && let Some(config) = self.app_config.remote_configurations.get_mut(idx)
                     {
                         if config.config_origin == ConfigOrigin::GalionConfig {
                             *config = new_remote;
                         } else {
-                            self.app.config.remote_configurations.insert(0, new_remote);
+                            self.app_config.remote_configurations.insert(0, new_remote);
                         }
-                        if let Err(e) = self.app.save_config() {
+                        if let Err(e) = self.app_config.save_config() {
                             self.new_error(format!("Error save the config {e}"));
                         } else {
                             self.mode = TuiMode::Normal;
@@ -863,18 +867,23 @@ impl<'a> TuiApp<'a> {
             .collect::<Row<'_>>()
             .style(header_style)
             .height(1);
-        let rows = self.app.remotes().iter().enumerate().map(|(i, data)| {
-            let _color = match i % 2 {
-                0 => self.colors.normal_row_color,
-                _ => self.colors.alt_row_color,
-            };
-            let item = data.to_table_row();
-            item.into_iter()
-                .map(|content| Cell::from(Text::from(format!("\n{content}\n"))))
-                .collect::<Row<'_>>()
-                .style(Style::new().fg(self.colors.row_fg).bg(self.colors.row_fg))
-                .height(4)
-        });
+        let rows = self
+            .app_config
+            .remotes()
+            .iter()
+            .enumerate()
+            .map(|(i, data)| {
+                let _color = match i % 2 {
+                    0 => self.colors.normal_row_color,
+                    _ => self.colors.alt_row_color,
+                };
+                let item = data.to_table_row();
+                item.into_iter()
+                    .map(|content| Cell::from(Text::from(format!("\n{content}\n"))))
+                    .collect::<Row<'_>>()
+                    .style(Style::new().fg(self.colors.row_fg).bg(self.colors.row_fg))
+                    .height(4)
+            });
         let bar = " █ ";
         let t = Table::new(
             rows,
