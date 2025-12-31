@@ -5,9 +5,9 @@ Sync tui for rclone <https://github.com/Its-Just-Nans/galion>
 ```txt
     _~
  _~ )_)_~
- )_))_))_)
- _!__!__!_     galion
- \______t/     sync tui for rclone
+ )_))_))_)     galion
+ _!__!__!_     sync tui for rclone
+ \______t/
 ```
 
 ## Usage
