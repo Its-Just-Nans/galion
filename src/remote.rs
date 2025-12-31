@@ -57,20 +57,20 @@ pub(crate) struct EditRemote {
     /// Position of cursor in the editor area
     pub(crate) character_index: usize,
     /// Remote name
-    pub(crate) edit_remote_name: String,
+    pub(crate) remote_name: String,
     /// Remote src
-    pub(crate) edit_remote_src: String,
+    pub(crate) remote_src: String,
     /// Remote destination
-    pub(crate) edit_remote_dest: String,
+    pub(crate) remote_dest: String,
 }
 
 impl EditRemote {
     /// Byte index of the selected input
     fn byte_index(&mut self) -> usize {
         let input = match self.idx_string {
-            0 => &mut self.edit_remote_name,
-            1 => &mut self.edit_remote_src,
-            _ => &mut self.edit_remote_dest,
+            0 => &mut self.remote_name,
+            1 => &mut self.remote_src,
+            _ => &mut self.remote_dest,
         };
         input
             .char_indices()
@@ -83,9 +83,9 @@ impl EditRemote {
     pub fn enter_char(&mut self, new_char: char) {
         let index = self.byte_index();
         let input = match self.idx_string {
-            0 => &mut self.edit_remote_name,
-            1 => &mut self.edit_remote_src,
-            _ => &mut self.edit_remote_dest,
+            0 => &mut self.remote_name,
+            1 => &mut self.remote_src,
+            _ => &mut self.remote_dest,
         };
         input.insert(index, new_char);
         self.move_cursor_right();
@@ -94,9 +94,9 @@ impl EditRemote {
     /// Clamp cursor based on the selected input
     fn clamp_cursor(&self, new_cursor_pos: usize) -> usize {
         let input_count = match self.idx_string {
-            0 => self.edit_remote_name.chars().count(),
-            1 => self.edit_remote_src.chars().count(),
-            _ => self.edit_remote_dest.chars().count(),
+            0 => self.remote_name.chars().count(),
+            1 => self.remote_src.chars().count(),
+            _ => self.remote_dest.chars().count(),
         };
         new_cursor_pos.clamp(0, input_count)
     }
@@ -118,9 +118,9 @@ impl EditRemote {
         let is_not_cursor_leftmost = self.character_index != 0;
         if is_not_cursor_leftmost {
             let input = match self.idx_string {
-                0 => &mut self.edit_remote_name,
-                1 => &mut self.edit_remote_src,
-                _ => &mut self.edit_remote_dest,
+                0 => &mut self.remote_name,
+                1 => &mut self.remote_src,
+                _ => &mut self.remote_dest,
             };
             // Method "remove" is not used on the saved text for deleting the selected char.
             // Reason: Using remove on String works on bytes instead of the chars.
@@ -144,9 +144,9 @@ impl EditRemote {
     /// Reset char index
     pub fn reset_char_index(&mut self) {
         let input_len = match self.idx_string {
-            0 => self.edit_remote_name.chars().count(),
-            1 => self.edit_remote_src.chars().count(),
-            _ => self.edit_remote_dest.chars().count(),
+            0 => self.remote_name.chars().count(),
+            1 => self.remote_src.chars().count(),
+            _ => self.remote_dest.chars().count(),
         };
         self.character_index = self.clamp_cursor(input_len);
     }
@@ -154,9 +154,9 @@ impl EditRemote {
     /// Get the edited new remote
     pub fn finish(&self) -> RemoteConfiguration {
         RemoteConfiguration {
-            remote_name: self.edit_remote_name.clone(),
-            remote_src: Some(self.edit_remote_src.clone()),
-            remote_dest: Some(self.edit_remote_dest.clone()),
+            remote_name: self.remote_name.clone(),
+            remote_src: Some(self.remote_src.clone()),
+            remote_dest: Some(self.remote_dest.clone()),
             config_origin: ConfigOrigin::GalionConfig,
         }
     }

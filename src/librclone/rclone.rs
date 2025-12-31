@@ -15,6 +15,7 @@ pub struct Rclone {
 
 impl Rclone {
     /// Create a new rclone instance and initialize it
+    #[must_use]
     pub fn new() -> Self {
         let mut rclone = Self::default();
         rclone.initialize();
@@ -25,7 +26,7 @@ impl Rclone {
     pub fn initialize(&mut self) {
         if !self.librclone_is_initialized {
             unsafe { librclone_bindings::RcloneInitialize() };
-            self.librclone_is_initialized = true
+            self.librclone_is_initialized = true;
         }
     }
 
@@ -33,18 +34,18 @@ impl Rclone {
     pub fn finalize(&mut self) {
         if self.librclone_is_initialized {
             unsafe { librclone_bindings::RcloneFinalize() }
-            self.librclone_is_initialized = false
+            self.librclone_is_initialized = false;
         }
     }
 
     /// RPC call
     /// # Errors
     /// Errors if RPC call fails
-    pub fn rpc(&self, method: &str, input: Value) -> Result<String, String> {
+    pub fn rpc(&self, method: &str, input: &Value) -> Result<String, String> {
         let method_bytes = method.as_bytes();
         let mut method_c_chars: Vec<c_char> = method_bytes
             .iter()
-            .map(|c| *c as c_char)
+            .map(|c| (*c).cast_signed())
             .collect::<Vec<c_char>>();
         method_c_chars.push(0); // null terminator
         let method_mut_ptr: *mut c_char = method_c_chars.as_mut_ptr();
@@ -52,7 +53,7 @@ impl Rclone {
         let input_bytes: Vec<u8> = input.to_string().into_bytes();
         let mut input_c_chars: Vec<c_char> = input_bytes
             .iter()
-            .map(|c| *c as c_char)
+            .map(|c| (*c).cast_signed())
             .collect::<Vec<c_char>>();
         input_c_chars.push(0); // null terminator
         let input_mut_ptr: *mut c_char = input_c_chars.as_mut_ptr();
@@ -74,7 +75,7 @@ impl Rclone {
     /// rclone noop test
     /// # Errors
     /// Fails if error with lib
-    pub fn rc_noop(&self, value: Value) -> Result<Value, GalionError> {
+    pub fn rc_noop(&self, value: &Value) -> Result<Value, GalionError> {
         let res = self.rpc("rc/noop", value)?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
@@ -84,7 +85,7 @@ impl Rclone {
     /// # Errors
     /// Fails if error with lib
     pub fn rc_gc(&self) -> Result<(), GalionError> {
-        self.rpc("core/gc", json!({}))?;
+        self.rpc("core/gc", &json!({}))?;
         Ok(())
     }
 
@@ -92,7 +93,7 @@ impl Rclone {
     /// # Errors
     /// Fails if error with lib
     pub fn get_rpc_config(&self) -> Result<Value, GalionError> {
-        let res = self.rpc("options/get", json!({}))?;
+        let res = self.rpc("options/get", &json!({}))?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -100,7 +101,7 @@ impl Rclone {
     /// Set the rpc config
     /// # Errors
     /// Fails if error with lib
-    pub fn set_config_options(&self, conf: Value) -> Result<Value, GalionError> {
+    pub fn set_config_options(&self, conf: &Value) -> Result<Value, GalionError> {
         let res = self.rpc("options/set", conf)?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
@@ -113,7 +114,7 @@ impl Rclone {
         let input_json = json!({
             "path": config_path
         });
-        let res = self.rpc("config/setpath", input_json)?;
+        let res = self.rpc("config/setpath", &input_json)?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -122,7 +123,7 @@ impl Rclone {
     /// # Errors
     /// Fails if error with lib
     pub fn dump_config(&self) -> Result<Value, GalionError> {
-        let res = self.rpc("config/dump", json!({}))?;
+        let res = self.rpc("config/dump", &json!({}))?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -131,7 +132,7 @@ impl Rclone {
     /// # Errors
     /// Fails if error with lib
     pub fn list_remotes(&self) -> Result<Vec<String>, GalionError> {
-        let res = self.rpc("config/listremotes", json!({}))?;
+        let res = self.rpc("config/listremotes", &json!({}))?;
         let value = serde_json::from_str::<Value>(&res)?;
         match value {
             Value::Object(arr) => match arr.get("remotes") {
@@ -154,7 +155,7 @@ impl Rclone {
     /// # Errors
     /// Fails if error with lib
     pub fn get_remote(&self, remote_name: &str) -> Result<Value, GalionError> {
-        let res = self.rpc("config/get", json!({"name": remote_name}))?;
+        let res = self.rpc("config/get", &json!({"name": remote_name}))?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
@@ -170,7 +171,7 @@ impl Rclone {
     ) -> Result<Value, GalionError> {
         match self.rpc(
             "sync/sync",
-            json!({
+            &json!({
                 "srcFs": src_fs.as_ref(),
                 "dstFs": dest_fs.as_ref(),
                 "_async": is_async,
@@ -191,7 +192,7 @@ impl Rclone {
     /// # Errors
     /// Fails if error with lib
     pub fn job_list(&self) -> Result<RcJobList, GalionError> {
-        let res = self.rpc("job/list", json!({}))?;
+        let res = self.rpc("job/list", &json!({}))?;
         let list = serde_json::from_str::<RcJobList>(&res)?;
         Ok(list)
     }
@@ -200,13 +201,13 @@ impl Rclone {
     /// # Errors
     /// Fails if error with lib
     pub fn job_status(&self, job_id: u64) -> Result<Value, GalionError> {
-        let res = self.rpc("job/status", json!({ "jobid": job_id }))?;
+        let res = self.rpc("job/status", &json!({ "jobid": job_id }))?;
         let value = serde_json::from_str::<Value>(&res)?;
         Ok(value)
     }
 }
 
-/// RcJobList
+/// Job List struct
 #[derive(Debug, Deserialize, Serialize)]
 pub struct RcJobList {
     /// ids of jobs

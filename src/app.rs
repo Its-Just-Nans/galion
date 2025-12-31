@@ -44,7 +44,7 @@ impl GalionConfig {
 
     /// Get the config path
     /// # Errors
-    /// Fails if home_dir not found
+    /// Fails if [`home_dir`] not found
     pub fn get_default_config_path() -> Result<PathBuf, GalionError> {
         let mut path = home_dir().ok_or("Unable to get home directory")?;
         path.push(".config");
@@ -80,6 +80,7 @@ impl GalionConfig {
 /// Galion arguments parsing
 #[derive(Parser, Debug)]
 #[command(name = "galion", version, about = "Galion CLI")]
+#[allow(clippy::struct_excessive_bools)]
 pub struct GalionArgs {
     /// Path to the configuration file
     #[arg(long, value_name = "FILE")]
@@ -122,12 +123,12 @@ const APP_NAME: &str = "galion";
 
 impl GalionApp {
     /// Galion ASCII art
-    /// This ASCII pic can be found at https://asciiart.website/art/4370
-    const GALION: &str = r#"    _~
+    /// This ASCII pic can be found at <https://asciiart.website/art/4370>
+    const GALION: &str = r"    _~
  _~ )_)_~
  )_))_))_)
  _!__!__!_
- \______t/"#;
+ \______t/";
 
     /// Waves ASCII art
     pub(crate) const WAVES: &str = "~~~~~~~~~~~~";
@@ -150,11 +151,13 @@ impl GalionApp {
     }
 
     /// Galion logo
+    #[must_use]
     pub fn logo() -> String {
         format!("{}\n{}", Self::GALION, Self::WAVES)
     }
 
     /// Galion logo with random waves
+    #[must_use]
     pub fn logo_random_waves() -> String {
         let mut rng = rand::rng();
 
@@ -173,6 +176,7 @@ impl GalionApp {
     }
 
     /// Logo with waves
+    #[must_use]
     pub fn logo_waves() -> String {
         format!("{}\n{}", Self::GALION, Self::WAVES)
     }
@@ -197,13 +201,13 @@ impl GalionApp {
         if !self.galion_args.hide_banner {
             println!("{}", Self::logo());
         }
-        self.rclone.set_config_options(json!({
+        self.rclone.set_config_options(&json!({
             "main": {
                 "LogLevel": "CRITICAL",
             },
         }))?;
         if !self.galion_args.rclone_ask_password {
-            self.rclone.set_config_options(json!({
+            self.rclone.set_config_options(&json!({
                 "main": {
                     "AskPassword": false,
                 },
@@ -216,8 +220,7 @@ impl GalionApp {
                 "and you can retry with the --rclone-ask-password flag"
             };
             return Err(GalionError::new(format!(
-                "Failed to get the rclone configuration. Most likely the configuration is encrypted {} - {}",
-                msg, e
+                "Failed to get the rclone configuration. Most likely the configuration is encrypted {msg} - {e}"
             )));
         }
         let list_remotes = self.rclone.list_remotes()?;

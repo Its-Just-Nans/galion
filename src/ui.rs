@@ -25,10 +25,11 @@ use std::{io, thread};
 use time::{OffsetDateTime, macros::format_description};
 
 use crate::app::GalionConfig;
+use crate::librclone::Rclone;
 use crate::remote::{ConfigOrigin, EditRemote, RemoteConfiguration};
 use crate::{GalionApp, GalionError};
 
-/// SyncJob data
+/// [`SyncJob`] data
 #[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq)]
 pub struct SyncJobData {
     /// sync job id
@@ -139,12 +140,95 @@ impl Display for JobState {
                     job_status.start_time, // job_status.debug_str
                 )
             }
-            JobState::Done(job_status) => write!(f, "done: {}", job_status),
+            JobState::Done(job_status) => write!(f, "done: {job_status}"),
         }
     }
 }
 
 impl GalionApp {
+    /// Background thread to use rclone
+    fn background_thread(
+        rclone: &Rclone,
+        tx_to_ui: &Sender<ResultJob>,
+        rx_to_ui: &Receiver<SyncJob>,
+    ) -> Result<(), GalionError> {
+        let thread_loop = || -> Result<(), GalionError> {
+            let mut tracking_jobs = JobsList::new();
+            loop {
+                let is_jobs_waiting = tracking_jobs.values().any(JobState::is_waiting);
+                let res_job = if is_jobs_waiting {
+                    for (job_sync_data, job_state) in tracking_jobs.clone() {
+                        if let JobState::Done(_) = job_state {
+                            // skip done job
+                        } else if let Ok(value_job_status) = rclone.job_status(job_sync_data.job_id)
+                        {
+                            // println!("{:?}", value_job_status);
+                            let is_finished = value_job_status.get("finished").cloned();
+                            let debug_str = value_job_status.to_string();
+                            let mut job_status: JobStatus =
+                                serde_json::from_value(value_job_status)?;
+                            job_status.debug_str = Some(debug_str);
+                            if let Some(Value::Bool(finished)) = is_finished
+                                && finished
+                            {
+                                tracking_jobs.insert(job_sync_data, JobState::Done(job_status));
+                            } else {
+                                tracking_jobs.insert(job_sync_data, JobState::Pending(job_status));
+                            }
+                        }
+                    }
+                    match tx_to_ui.send(ResultJob::Sync(tracking_jobs.clone())) {
+                        Ok(a) => a,
+                        Err(_) => return Ok(()),
+                    }
+                    match rx_to_ui.try_recv() {
+                        Ok(job) => job,
+                        Err(mpsc::TryRecvError::Empty) => {
+                            sleep(Duration::from_millis(500));
+                            continue;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
+                    }
+                } else {
+                    match rx_to_ui.recv() {
+                        Ok(job) => job,
+                        Err(_) => {
+                            return Ok(());
+                        }
+                    }
+                };
+                match res_job {
+                    SyncJob::Exit => {
+                        return Ok(());
+                    }
+                    SyncJob::Sync(sync_data_received) => {
+                        let job =
+                            rclone.sync(&sync_data_received.src, &sync_data_received.dest, true)?;
+                        if let Some(Value::Number(jobid)) = job.get("jobid")
+                            && let Some(job_id) = jobid.as_u64()
+                        {
+                            let mut sync_data = sync_data_received.clone();
+                            sync_data.job_id = job_id;
+                            tracking_jobs.insert(sync_data, JobState::Sent);
+                        }
+                    }
+                }
+            }
+        };
+        match thread_loop() {
+            Ok(()) => Ok(()),
+            Err(err) => {
+                eprintln!("Background thread crashed: {err}");
+                if let Err(e) = tx_to_ui.send(ResultJob::Exit) {
+                    eprintln!("Failed to stop UI {e}");
+                }
+                Err(GalionError::new(format!(
+                    "Background thread crashed: {err}"
+                )))
+            }
+        }
+    }
+
     /// Run the galion ui
     /// # Errors
     /// Errors when ui errors
@@ -155,92 +239,7 @@ impl GalionApp {
             let (tx_to_thread, rx_to_ui) = mpsc::channel();
             let (tx_to_ui, rx_from_thread) = mpsc::channel();
             let sync_handler: thread::ScopedJoinHandle<'_, Result<(), GalionError>> =
-                s.spawn(move || {
-                    let thread_loop = || -> Result<(), GalionError> {
-                        let mut tracking_jobs = JobsList::new();
-                        loop {
-                            let is_jobs_waiting =
-                                tracking_jobs.values().any(|value| value.is_waiting());
-                            let res_job = if is_jobs_waiting {
-                                for (job_sync_data, job_state) in tracking_jobs.clone() {
-                                    if let JobState::Done(_) = job_state {
-                                        continue;
-                                    } else if let Ok(value_job_status) =
-                                        rclone.job_status(job_sync_data.job_id)
-                                    {
-                                        // println!("{:?}", value_job_status);
-                                        let is_finished = value_job_status.get("finished").cloned();
-                                        let debug_str = value_job_status.to_string();
-                                        let mut job_status: JobStatus =
-                                            serde_json::from_value(value_job_status)?;
-                                        job_status.debug_str = Some(debug_str);
-                                        if let Some(Value::Bool(finished)) = is_finished
-                                            && finished
-                                        {
-                                            tracking_jobs
-                                                .insert(job_sync_data, JobState::Done(job_status));
-                                        } else {
-                                            tracking_jobs.insert(
-                                                job_sync_data,
-                                                JobState::Pending(job_status),
-                                            );
-                                        }
-                                    }
-                                }
-                                match tx_to_ui.send(ResultJob::Sync(tracking_jobs.clone())) {
-                                    Ok(a) => a,
-                                    Err(_) => return Ok(()),
-                                };
-                                match rx_to_ui.try_recv() {
-                                    Ok(job) => job,
-                                    Err(mpsc::TryRecvError::Empty) => {
-                                        sleep(Duration::from_millis(500));
-                                        continue;
-                                    }
-                                    Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
-                                }
-                            } else {
-                                match rx_to_ui.recv() {
-                                    Ok(job) => job,
-                                    Err(_) => {
-                                        return Ok(());
-                                    }
-                                }
-                            };
-                            match res_job {
-                                SyncJob::Exit => {
-                                    return Ok(());
-                                }
-                                SyncJob::Sync(sync_data_received) => {
-                                    let job = rclone.sync(
-                                        &sync_data_received.src,
-                                        &sync_data_received.dest,
-                                        true,
-                                    )?;
-                                    if let Some(Value::Number(jobid)) = job.get("jobid")
-                                        && let Some(job_id) = jobid.as_u64()
-                                    {
-                                        let mut sync_data = sync_data_received.clone();
-                                        sync_data.job_id = job_id;
-                                        tracking_jobs.insert(sync_data, JobState::Sent);
-                                    }
-                                }
-                            }
-                        }
-                    };
-                    match thread_loop() {
-                        Ok(()) => Ok(()),
-                        Err(err) => {
-                            eprintln!("Background thread crashed: {}", err);
-                            if let Err(e) = tx_to_ui.send(ResultJob::Exit) {
-                                eprintln!("Failed to stop UI {e}")
-                            }
-                            Err(GalionError::new(format!(
-                                "Background thread crashed: {err}"
-                            )))
-                        }
-                    }
-                });
+                s.spawn(move || Self::background_thread(rclone, &tx_to_ui, &rx_to_ui));
 
             let mut terminal = ratatui::init();
             let app_result = TuiApp::new(&mut self.config, rx_from_thread, tx_to_thread)
@@ -335,9 +334,15 @@ fn constraint_len_calculator(items: &[RemoteConfiguration]) -> (u16, u16, u16) {
     let mut longest_item_lens = (0, 0, 0);
     for item in items {
         let item_lens = item.to_table_row();
-        longest_item_lens.0 = longest_item_lens.0.max(item_lens[0].len() as u16);
-        longest_item_lens.1 = longest_item_lens.1.max(item_lens[1].len() as u16);
-        longest_item_lens.2 = longest_item_lens.2.max(item_lens[2].len() as u16);
+        longest_item_lens.0 = longest_item_lens
+            .0
+            .max(u16::try_from(item_lens[0].len()).unwrap_or(0));
+        longest_item_lens.1 = longest_item_lens
+            .1
+            .max(u16::try_from(item_lens[1].len()).unwrap_or(0));
+        longest_item_lens.2 = longest_item_lens
+            .2
+            .max(u16::try_from(item_lens[2].len()).unwrap_or(0));
     }
     longest_item_lens
 }
@@ -362,7 +367,7 @@ impl<'a> TuiApp<'a> {
             app_config,
             rx_from_thread,
             tx_to_thread,
-            jobs: Default::default(),
+            jobs: JobsList::default(),
             exit: false,
             longest_item_lens,
             colors: Colors::default(),
@@ -403,36 +408,38 @@ impl<'a> TuiApp<'a> {
         self.render_scrollbar(frame, sub_chunks[0]);
         self.render_right_panel(frame, sub_chunks[1]);
         self.render_bottom_bar(frame, chunks[1]);
-        self.render_error_popup(frame);
+        self.render_popup(frame);
     }
 
     /// Render the popup error
     fn render_error_popup(&self, frame: &mut Frame<'_>) {
+        let (title, content) = if let TuiMode::Error(error_msg) = &self.mode {
+            ("Error", error_msg.as_ref())
+        } else {
+            ("Delete remote configuration", "Delete the config (y/n)")
+        };
+        let block = Block::bordered().title(title);
+        let error_msg_widget = Paragraph::new(Line::from(content))
+            .style(Style::default().bg(Color::Black).fg(Color::White))
+            .block(block);
+        let vertical = Layout::vertical([Constraint::Length(3)]).flex(Flex::Center);
+        let horizontal = Layout::horizontal([Constraint::Percentage(40)]).flex(Flex::Center);
+        let [area] = vertical.areas(frame.area());
+        let [area] = horizontal.areas(area);
+        frame.render_widget(Clear, area); //this clears out the background
+        frame.render_widget(error_msg_widget, area);
+    }
+
+    /// Render the popup error
+    fn render_popup(&self, frame: &mut Frame<'_>) {
         match &self.mode {
             TuiMode::Error(_) | TuiMode::Delete => {
-                let (title, content) = if let TuiMode::Error(error_msg) = &self.mode {
-                    ("Error", error_msg.as_ref())
-                } else {
-                    ("Delete remote configuration", "Delete the config (y/n)")
-                };
-                let block = Block::bordered().title(title);
-                let error_msg_widget = Paragraph::new(Line::from(content))
-                    .style(Style::default().bg(Color::Black).fg(Color::White))
-                    .block(block);
-                let vertical = Layout::vertical([Constraint::Length(3)]).flex(Flex::Center);
-                let horizontal =
-                    Layout::horizontal([Constraint::Percentage(40)]).flex(Flex::Center);
-                let [area] = vertical.areas(frame.area());
-                let [area] = horizontal.areas(area);
-                frame.render_widget(Clear, area); //this clears out the background
-                frame.render_widget(error_msg_widget, area);
+                self.render_error_popup(frame);
             }
             TuiMode::EditString(edit_string) => {
-                let vertical = Layout::vertical([Constraint::Length(8)]).flex(Flex::Center);
-                let horizontal =
-                    Layout::horizontal([Constraint::Percentage(30)]).flex(Flex::Center);
-                let [area] = vertical.areas(frame.area());
-                let [area] = horizontal.areas(area);
+                let area = frame
+                    .area()
+                    .centered(Constraint::Percentage(30), Constraint::Length(8));
                 frame.render_widget(Clear, area); //this clears out the background
                 let block = Block::bordered().title("Edit");
                 let inner_block_area = block.inner(area);
@@ -460,20 +467,19 @@ impl<'a> TuiApp<'a> {
                         0 => Style::default().fg(Color::Yellow),
                         _ => Style::default(),
                     });
-                let input_name =
-                    Paragraph::new(edit_string.edit_remote_name.as_str()).style(match edit_string
-                        .idx_string
-                    {
+                let input_name = Paragraph::new(edit_string.remote_name.as_str()).style(
+                    match edit_string.idx_string {
                         0 => Style::default().fg(Color::Yellow),
                         _ => Style::default(),
-                    });
+                    },
+                );
                 frame.render_widget(title_name, area_title_name);
                 frame.render_widget(input_name, area_name);
                 if edit_string.idx_string == 0 {
                     frame.set_cursor_position(Position::new(
                         // Draw the cursor at the current position in the input field.
                         // This position is can be controlled via the left and right arrow key
-                        area_name.x + edit_string.character_index as u16,
+                        area_name.x + u16::try_from(edit_string.character_index).unwrap_or(0),
                         area_name.y,
                     ));
                 }
@@ -482,7 +488,7 @@ impl<'a> TuiApp<'a> {
                         1 => Style::default().fg(Color::Yellow),
                         _ => Style::default(),
                     });
-                let input_src = Paragraph::new(edit_string.edit_remote_src.as_str()).style(
+                let input_src = Paragraph::new(edit_string.remote_src.as_str()).style(
                     match edit_string.idx_string {
                         1 => Style::default().fg(Color::Yellow),
                         _ => Style::default(),
@@ -494,7 +500,7 @@ impl<'a> TuiApp<'a> {
                     frame.set_cursor_position(Position::new(
                         // Draw the cursor at the current position in the input field.
                         // This position is can be controlled via the left and right arrow key
-                        area_src.x + edit_string.character_index as u16,
+                        area_src.x + u16::try_from(edit_string.character_index).unwrap_or(0),
                         area_src.y,
                     ));
                 }
@@ -503,25 +509,24 @@ impl<'a> TuiApp<'a> {
                         2 => Style::default().fg(Color::Yellow),
                         _ => Style::default(),
                     });
-                let input_dest =
-                    Paragraph::new(edit_string.edit_remote_dest.as_str()).style(match edit_string
-                        .idx_string
-                    {
+                let input_dest = Paragraph::new(edit_string.remote_dest.as_str()).style(
+                    match edit_string.idx_string {
                         2 => Style::default().fg(Color::Yellow),
                         _ => Style::default(),
-                    });
+                    },
+                );
                 frame.render_widget(title_dest, area_title_dest);
                 frame.render_widget(input_dest, area_dest);
                 if edit_string.idx_string == 2 {
                     frame.set_cursor_position(Position::new(
                         // Draw the cursor at the current position in the input field.
                         // This position is can be controlled via the left and right arrow key
-                        area_dest.x + edit_string.character_index as u16,
+                        area_dest.x + u16::try_from(edit_string.character_index).unwrap_or(0),
                         area_dest.y,
                     ));
                 }
             }
-            _ => {}
+            TuiMode::Normal => {}
         }
     }
 
@@ -532,33 +537,31 @@ impl<'a> TuiApp<'a> {
                 // it's important to check that the event is a key press event as
                 // crossterm also emits key release and repeat events on Windows.
                 Event::Key(key_event) if key_event.kind == KeyEventKind::Press => {
-                    self.handle_key_event(key_event)
+                    self.handle_key_event(key_event);
                 }
                 _ => {}
-            };
+            }
         }
         Ok(())
     }
 
     /// Add a new error
     fn new_error<S: Into<String>>(&mut self, msg: S) {
-        self.mode = TuiMode::Error(msg.into())
+        self.mode = TuiMode::Error(msg.into());
     }
 
     /// send a job
     fn send_job(&mut self) {
-        let current_selected_job = match self.state.selected() {
-            Some(idx) => match self.app_config.remotes().get(idx) {
-                Some(remote) => remote,
-                None => {
-                    self.new_error(format!("No remote configuration at index {idx} in remotes"));
-                    return;
-                }
-            },
-            None => {
-                self.new_error("No remote configuration selected");
+        let current_selected_job = if let Some(idx) = self.state.selected() {
+            if let Some(remote) = self.app_config.remotes().get(idx) {
+                remote
+            } else {
+                self.new_error(format!("No remote configuration at index {idx} in remotes"));
                 return;
             }
+        } else {
+            self.new_error("No remote configuration selected");
+            return;
         };
         let Some(remote_src) = &current_selected_job.remote_src else {
             self.new_error("Remote doesn't have a source - press e for edit");
@@ -579,6 +582,90 @@ impl<'a> TuiApp<'a> {
         }
     }
 
+    /// Ratatui handle key for normal mode
+    fn handle_key_event_normal_mode(&mut self, key_event: KeyEvent) {
+        match key_event.code {
+            KeyCode::Char('q') | KeyCode::Esc => {
+                self.exit();
+            }
+            KeyCode::Right => self.send_job(),
+            KeyCode::Char('r') | KeyCode::Delete | KeyCode::Backspace => {
+                if let Some(idx) = self.state.selected()
+                    && let Some(config) = self.app_config.remotes().get(idx)
+                {
+                    if config.config_origin == ConfigOrigin::RcloneConfig {
+                        self.new_error("Cannot delete a remote from the rclone config");
+                    } else {
+                        self.mode = TuiMode::Delete;
+                    }
+                } else {
+                    self.new_error("Cannot delete the config");
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(idx) = self.state.selected()
+                    && let Some(config) = self.app_config.remotes().get(idx)
+                {
+                    if config.config_origin == ConfigOrigin::RcloneConfig {
+                        self.new_error("Cannot duplicate a rclone config - try to edit it");
+                    } else {
+                        self.app_config
+                            .remote_configurations
+                            .insert(0, config.clone());
+                    }
+                } else {
+                    self.new_error("Cannot duplicate the config");
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                // Select new row
+                let i = match self.state.selected() {
+                    Some(i) => {
+                        if i >= self.app_config.remotes().len() - 1 {
+                            self.app_config.remotes().len() - 1
+                        } else {
+                            i + 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.state.select(Some(i));
+                self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                // Select previous row
+                let i = match self.state.selected() {
+                    Some(i) => {
+                        if i == 0 {
+                            0
+                        } else {
+                            i - 1
+                        }
+                    }
+                    None => 0,
+                };
+                self.state.select(Some(i));
+                self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
+            }
+            KeyCode::Char('e') => {
+                if let Some(idx) = self.state.selected()
+                    && let Some(config) = self.app_config.remotes().get(idx)
+                {
+                    self.mode = TuiMode::EditString(EditRemote {
+                        idx_string: 0,
+                        character_index: 0,
+                        remote_name: config.remote_name.clone(),
+                        remote_src: config.remote_src.clone().unwrap_or_default(),
+                        remote_dest: config.remote_dest.clone().unwrap_or_default(),
+                    });
+                } else {
+                    self.new_error("Cannot edit");
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Ratatui handle key
     fn handle_key_event(&mut self, key_event: KeyEvent) {
         // Handle CRTL + c
@@ -588,88 +675,9 @@ impl<'a> TuiApp<'a> {
                 return;
             }
             _ => {}
-        };
+        }
         match &mut self.mode {
-            TuiMode::Normal => match key_event.code {
-                KeyCode::Char('q') | KeyCode::Esc => {
-                    self.exit();
-                }
-                KeyCode::Right => self.send_job(),
-                KeyCode::Char('r') | KeyCode::Delete | KeyCode::Backspace => {
-                    if let Some(idx) = self.state.selected()
-                        && let Some(config) = self.app_config.remotes().get(idx)
-                    {
-                        if config.config_origin == ConfigOrigin::RcloneConfig {
-                            self.new_error("Cannot delete a remote from the rclone config");
-                        } else {
-                            self.mode = TuiMode::Delete
-                        }
-                    } else {
-                        self.new_error("Cannot delete the config");
-                    }
-                }
-                KeyCode::Char('d') => {
-                    if let Some(idx) = self.state.selected()
-                        && let Some(config) = self.app_config.remotes().get(idx)
-                    {
-                        if config.config_origin == ConfigOrigin::RcloneConfig {
-                            self.new_error("Cannot duplicate a rclone config - try to edit it");
-                        } else {
-                            self.app_config
-                                .remote_configurations
-                                .insert(0, config.clone());
-                        }
-                    } else {
-                        self.new_error("Cannot duplicate the config");
-                    }
-                }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    // Select new row
-                    let i = match self.state.selected() {
-                        Some(i) => {
-                            if i >= self.app_config.remotes().len() - 1 {
-                                self.app_config.remotes().len() - 1
-                            } else {
-                                i + 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    self.state.select(Some(i));
-                    self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    // Select previous row
-                    let i = match self.state.selected() {
-                        Some(i) => {
-                            if i == 0 {
-                                0
-                            } else {
-                                i - 1
-                            }
-                        }
-                        None => 0,
-                    };
-                    self.state.select(Some(i));
-                    self.scroll_state = self.scroll_state.position(i * ITEM_HEIGHT);
-                }
-                KeyCode::Char('e') => {
-                    if let Some(idx) = self.state.selected()
-                        && let Some(config) = self.app_config.remotes().get(idx)
-                    {
-                        self.mode = TuiMode::EditString(EditRemote {
-                            idx_string: 0,
-                            character_index: 0,
-                            edit_remote_name: config.remote_name.clone(),
-                            edit_remote_src: config.remote_src.clone().unwrap_or_default(),
-                            edit_remote_dest: config.remote_dest.clone().unwrap_or_default(),
-                        });
-                    } else {
-                        self.new_error("Cannot edit");
-                    }
-                }
-                _ => {}
-            },
+            TuiMode::Normal => self.handle_key_event_normal_mode(key_event),
             TuiMode::Error(_) => match key_event.code {
                 KeyCode::Char('q') | KeyCode::Esc => {
                     self.mode = TuiMode::Normal;
@@ -677,7 +685,7 @@ impl<'a> TuiApp<'a> {
                 _ => {}
             },
             TuiMode::Delete => match key_event.code {
-                KeyCode::Char('q') | KeyCode::Esc | KeyCode::Char('n') => {
+                KeyCode::Char('q' | 'n') | KeyCode::Esc => {
                     self.mode = TuiMode::Normal;
                 }
                 KeyCode::Char('y') | KeyCode::Enter => {
@@ -694,7 +702,7 @@ impl<'a> TuiApp<'a> {
                                 "Failed to save the config after remote deletion {e}"
                             ));
                         } else {
-                            self.mode = TuiMode::Normal
+                            self.mode = TuiMode::Normal;
                         }
                     }
                 }
@@ -704,16 +712,16 @@ impl<'a> TuiApp<'a> {
                 KeyCode::Esc => {
                     self.mode = TuiMode::Normal;
                 }
-                KeyCode::Down => {
+                KeyCode::Down | KeyCode::Tab => {
                     if edit_string.idx_string != 2 {
                         edit_string.idx_string += 1;
-                        edit_string.reset_char_index()
+                        edit_string.reset_char_index();
                     }
                 }
                 KeyCode::Up => {
                     if edit_string.idx_string != 0 {
                         edit_string.idx_string -= 1;
-                        edit_string.reset_char_index()
+                        edit_string.reset_char_index();
                     }
                 }
                 KeyCode::Enter => {
@@ -733,12 +741,6 @@ impl<'a> TuiApp<'a> {
                         }
                     } else {
                         self.new_error("Cannot edit remote");
-                    }
-                }
-                KeyCode::Tab => {
-                    if edit_string.idx_string != 2 {
-                        edit_string.idx_string += 1;
-                        edit_string.reset_char_index()
                     }
                 }
                 KeyCode::Left => edit_string.move_cursor_left(),
@@ -797,7 +799,7 @@ impl<'a> TuiApp<'a> {
                 "(enter)".bold(),
                 " save".into(),
             ],
-            _ => vec![
+            TuiMode::Delete => vec![
                 "(esc/n)".bold(),
                 " cancel | ".into(),
                 "(y)".bold(),

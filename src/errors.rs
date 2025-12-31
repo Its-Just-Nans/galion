@@ -30,7 +30,7 @@ impl fmt::Display for GalionError {
 }
 
 impl GalionError {
-    /// Create new AppError
+    /// Create new error
     pub fn new<S: AsRef<str>>(s: S) -> Self {
         let ref_str = s.as_ref();
         let message = ref_str.to_string();
