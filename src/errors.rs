@@ -71,15 +71,6 @@ impl From<serde_json::Error> for GalionError {
     }
 }
 
-impl From<clap::error::Error> for GalionError {
-    fn from(error: clap::error::Error) -> Self {
-        Self {
-            message: error.to_string(),
-            source: Some(Arc::new(error)),
-        }
-    }
-}
-
 impl From<Value> for GalionError {
     fn from(value: Value) -> Self {
         match value.get("error") {

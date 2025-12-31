@@ -84,8 +84,8 @@ impl GalionApp {
     /// Create new galion instance
     /// # Errors
     /// Error if fails
-    pub fn try_new() -> Result<Self, GalionError> {
-        let galion_args = GalionArgs::try_parse()?;
+    pub fn try_new(args: &[String]) -> Result<Self, GalionError> {
+        let galion_args = GalionArgs::try_parse_from(args).map_err(|e| e.to_string())?;
         let config_path = galion_args
             .config
             .clone()
@@ -130,8 +130,8 @@ impl GalionApp {
     /// Create new galion instance and init it
     /// # Errors
     /// Error if fails
-    pub fn try_new_init() -> Result<Self, GalionError> {
-        let mut galion = Self::try_new()?;
+    pub fn try_new_init(args: &[String]) -> Result<Self, GalionError> {
+        let mut galion = Self::try_new(args)?;
         {
             let mut rclone = galion
                 .rclone

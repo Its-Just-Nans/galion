@@ -1,4 +1,18 @@
 //! Galion
+//!
+//! ```txt
+//!     _~
+//!  _~ )_)_~
+//!  )_))_))_)     galion
+//!  _!__!__!_     sync tui for rclone
+//!  \______t/
+//! ```
+//!
+//! # Usage
+//! ```
+//! cargo install galion --locked
+//! galion -h
+//! ```
 
 #![warn(clippy::all, rust_2018_idioms)]
 #![deny(
@@ -26,7 +40,8 @@ pub use errors::GalionError;
 /// # Errors
 /// Fails if an error happens
 pub fn galion_main() -> Result<(), GalionError> {
-    let mut app = GalionApp::try_new_init()?;
+    let args: Vec<String> = std::env::args().collect();
+    let mut app = GalionApp::try_new_init(&args)?;
     app.run_tui()?;
     app.quit()?;
     Ok(())
