@@ -1,4 +1,4 @@
-//! Wrapper calls around [`lirclone`]
+//! Wrapper calls around librclone bindings
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
