@@ -192,13 +192,13 @@ impl GalionApp {
                         SyncJob::Exit => {
                             return Ok(());
                         }
-                        SyncJob::Sync(sync_data_receiv) => {
+                        SyncJob::Sync(sync_data_received) => {
                             let job =
-                                rclone.sync(&sync_data_receiv.src, &sync_data_receiv.dest, true)?;
+                                rclone.sync(&sync_data_received.src, &sync_data_received.dest, true)?;
                             if let Some(Value::Number(jobid)) = job.get("jobid")
                                 && let Some(job_id) = jobid.as_u64()
                             {
-                                let mut sync_data = sync_data_receiv.clone();
+                                let mut sync_data = sync_data_received.clone();
                                 sync_data.job_id = job_id;
                                 tracking_jobs.insert(sync_data, JobState::Sent);
                             }
