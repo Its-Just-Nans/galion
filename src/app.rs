@@ -5,6 +5,7 @@ use clap::Parser;
 use home::home_dir;
 use rand::Rng;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use serde_json::json;
 use std::path::PathBuf;
 
@@ -214,13 +215,27 @@ impl GalionApp {
             }))?;
         }
         if let Err(e) = self.rclone.dump_config() {
+            let err_string = e.to_string();
+            let err_string = if let Ok(j) = serde_json::from_str::<Value>(&err_string)
+                && let Some(Value::String(str)) = j.get("error")
+            {
+                str.clone()
+            } else {
+                err_string
+            };
+            let max_len = 80;
+            let error_msg = if err_string.len() > max_len {
+                format!("{}...", &err_string[..max_len.saturating_sub(3)])
+            } else {
+                err_string
+            };
             let msg = if self.galion_args.rclone_ask_password {
                 " and the decryption failed"
             } else {
                 "and you can retry with the --rclone-ask-password flag"
             };
             return Err(GalionError::new(format!(
-                "Failed to get the rclone configuration. Most likely the configuration is encrypted {msg} - {e}"
+                "Failed to get the rclone configuration. Most likely the configuration is encrypted {msg}.\nRclone internal error: {error_msg}"
             )));
         }
         let list_remotes = self.rclone.list_remotes()?;

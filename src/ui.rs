@@ -286,8 +286,6 @@ pub struct TuiApp<'a> {
     exit: bool,
     /// longest item length
     longest_item_lens: (u16, u16, u16),
-    /// colors
-    colors: Colors,
     /// state of the table
     state: TableState,
     /// state of the scrollbar
@@ -298,36 +296,6 @@ pub struct TuiApp<'a> {
 
 /// Item size
 const ITEM_HEIGHT: usize = 1;
-
-/// Tui Colors
-#[derive(Debug)]
-pub struct Colors {
-    /// Normal color of the row
-    pub normal_row_color: Color,
-    /// Second color of the row
-    pub alt_row_color: Color,
-    /// row foreground
-    pub row_fg: Color,
-    /// selected column color
-    pub selected_column_style_fg: Color,
-    /// selected cell color
-    pub selected_cell_style_fg: Color,
-    /// buffer background
-    pub buffer_bg: Color,
-}
-
-impl Default for Colors {
-    fn default() -> Self {
-        Colors {
-            normal_row_color: Color::Gray,
-            alt_row_color: Color::DarkGray,
-            row_fg: Color::White,
-            selected_column_style_fg: Color::Yellow,
-            selected_cell_style_fg: Color::Cyan,
-            buffer_bg: Color::Black,
-        }
-    }
-}
 
 /// Tiny helper
 fn constraint_len_calculator(items: &[RemoteConfiguration]) -> (u16, u16, u16) {
@@ -370,7 +338,6 @@ impl<'a> TuiApp<'a> {
             jobs: JobsList::default(),
             exit: false,
             longest_item_lens,
-            colors: Colors::default(),
             state: TableState::default().with_selected(0),
             scroll_state: ScrollbarState::new(remotes_len * ITEM_HEIGHT),
             mode: TuiMode::Normal,
@@ -563,6 +530,10 @@ impl<'a> TuiApp<'a> {
             self.new_error("No remote configuration selected");
             return;
         };
+        if current_selected_job.config_origin == ConfigOrigin::RcloneConfig {
+            self.new_error("Cannot sync a rclone config - press e for edit");
+            return;
+        }
         let Some(remote_src) = &current_selected_job.remote_src else {
             self.new_error("Remote doesn't have a source - press e for edit");
             return;
@@ -866,14 +837,6 @@ impl<'a> TuiApp<'a> {
         } else {
             Color::Blue
         };
-        let selected_row_style = Style::default()
-            .add_modifier(Modifier::REVERSED)
-            .fg(bg_color_selected);
-        let selected_col_style = Style::default().fg(self.colors.selected_column_style_fg);
-        let selected_cell_style = Style::default()
-            .add_modifier(Modifier::REVERSED)
-            .fg(self.colors.selected_cell_style_fg);
-
         let header = ["name/origin", "src", "dest"]
             .into_iter()
             .map(Cell::from)
@@ -887,14 +850,14 @@ impl<'a> TuiApp<'a> {
             .enumerate()
             .map(|(i, data)| {
                 let _color = match i % 2 {
-                    0 => self.colors.normal_row_color,
-                    _ => self.colors.alt_row_color,
+                    0 => Color::Gray,
+                    _ => Color::DarkGray,
                 };
                 let item = data.to_table_row();
                 item.into_iter()
                     .map(|content| Cell::from(Text::from(format!("\n{content}\n"))))
                     .collect::<Row<'_>>()
-                    .style(Style::new().fg(self.colors.row_fg).bg(self.colors.row_fg))
+                    .style(Style::new().fg(Color::Black).bg(Color::White))
                     .height(4)
             });
         let bar = " █ ";
@@ -908,9 +871,11 @@ impl<'a> TuiApp<'a> {
             ],
         )
         .header(header)
-        .row_highlight_style(selected_row_style)
-        .column_highlight_style(selected_col_style)
-        .cell_highlight_style(selected_cell_style)
+        .row_highlight_style(
+            Style::default()
+                .add_modifier(Modifier::REVERSED)
+                .fg(bg_color_selected),
+        )
         .highlight_symbol(Text::from(vec![
             "".into(),
             bar.into(),
@@ -928,12 +893,8 @@ impl<'a> TuiApp<'a> {
                 .orientation(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
-                .style(
-                    Style::default()
-                        .fg(self.colors.buffer_bg)
-                        .bg(self.colors.buffer_bg),
-                )
-                .track_style(Style::default().fg(self.colors.buffer_bg).bg(Color::White)),
+                .style(Style::default().fg(Color::Black).bg(Color::Black))
+                .track_style(Style::default().fg(Color::Black).bg(Color::White)),
             area.inner(Margin {
                 vertical: 1,
                 horizontal: 1,
