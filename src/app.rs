@@ -123,12 +123,11 @@ const APP_NAME: &str = "galion";
 impl GalionApp {
     /// Galion ASCII art
     /// This ASCII pic can be found at https://asciiart.website/art/4370
-    const GALION: &str = r#"
-    _~
-    _~ )_)_~
-    )_))_))_)
-    _!__!__!_
-    \______t/"#;
+    const GALION: &str = r#"    _~
+ _~ )_)_~
+ )_))_))_)
+ _!__!__!_
+ \______t/"#;
 
     /// Waves ASCII art
     pub(crate) const WAVES: &str = "~~~~~~~~~~~~";

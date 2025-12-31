@@ -3,7 +3,7 @@
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll};
 use ratatui::layout::{Alignment, Flex, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
-use ratatui::text::Line;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{
     Borders, Cell, Clear, HighlightSpacing, Row, Scrollbar, ScrollbarOrientation, ScrollbarState,
     Table, TableState, Wrap,
@@ -110,6 +110,20 @@ impl JobState {
         match self {
             Self::Sent | Self::Pending(_) => true,
             Self::Done(_) => false,
+        }
+    }
+
+    /// Is this job an error
+    fn success_color(&self) -> Color {
+        match self {
+            Self::Sent | Self::Pending(_) => Color::Blue,
+            Self::Done(s) => {
+                if s.success {
+                    Color::Green
+                } else {
+                    Color::Red
+                }
+            }
         }
     }
 }
@@ -279,8 +293,6 @@ pub struct TuiApp<'a> {
     state: TableState,
     /// state of the scrollbar
     scroll_state: ScrollbarState,
-    /// Debug frames
-    debug_frame: Option<i64>,
     /// Error display
     mode: TuiMode,
 }
@@ -356,7 +368,6 @@ impl<'a> TuiApp<'a> {
             colors: Colors::default(),
             state: TableState::default().with_selected(0),
             scroll_state: ScrollbarState::new(remotes_len * ITEM_HEIGHT),
-            debug_frame: None, // Some(0),
             mode: TuiMode::Normal,
         }
     }
@@ -814,34 +825,34 @@ impl<'a> TuiApp<'a> {
         let job_block = Block::default()
             .borders(Borders::ALL)
             .style(Style::default());
-        let job_text = if self.jobs.is_empty() {
-            let mut str_to_show = format!(
-                "{}\nNothing to do, just sailing",
-                match self.mode {
-                    TuiMode::Normal => GalionApp::logo_random_waves(),
-                    _ => GalionApp::logo_waves(),
-                }
-            );
-            if let Some(debug_frame) = &mut self.debug_frame {
-                *debug_frame += 1;
-                str_to_show.push_str(&format!("\n{:?}", debug_frame));
-            }
+        let job_text: Vec<Line<'_>> = if self.jobs.is_empty() {
+            let str_to_show = match self.mode {
+                TuiMode::Normal => GalionApp::logo_random_waves(),
+                _ => GalionApp::logo_waves(),
+            };
             str_to_show
+                .lines()
+                .map(|s| Line::from(String::from(s)))
+                .chain(std::iter::once(Line::from("Nothing to do, just sailing")))
+                .collect()
         } else {
-            let mut str_to_show = String::new();
+            let mut str_to_show = Vec::new();
             // Show latest jobs first
             for (one_job_data, state) in self.jobs.iter().rev() {
-                str_to_show.push_str(&format!(
+                let job_string = format!(
                     "job {} ({}): {}\n",
                     one_job_data.name, one_job_data.job_id, state
-                ));
+                );
+                str_to_show.push(Line::from(Span::styled(
+                    job_string,
+                    Style::default().fg(state.success_color()),
+                )));
             }
             str_to_show
         };
-        let job_paragraph =
-            Paragraph::new(Text::styled(job_text, Style::default().fg(Color::Green)))
-                .wrap(Wrap { trim: false })
-                .block(job_block);
+        let job_paragraph = Paragraph::new(Text::from(job_text))
+            .wrap(Wrap { trim: false })
+            .block(job_block);
         frame.render_widget(job_paragraph, area);
     }
 
