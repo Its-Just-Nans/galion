@@ -155,17 +155,17 @@ impl Rclone {
     /// Trigger a sync job
     /// # Errors
     /// Fails if error with lib
-    pub fn sync(
+    pub fn sync<Src: AsRef<str>, Dest: AsRef<str>>(
         &self,
-        src_fs: String,
-        dest_fs: String,
+        src_fs: Src,
+        dest_fs: Dest,
         is_async: bool,
     ) -> Result<Value, GalionError> {
         match self.rpc(
             "sync/sync",
             json!({
-                "srcFs": src_fs,
-                "dstFs": dest_fs,
+                "srcFs": src_fs.as_ref(),
+                "dstFs": dest_fs.as_ref(),
                 "_async": is_async,
             }),
         ) {

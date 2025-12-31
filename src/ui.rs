@@ -1,7 +1,7 @@
 //! Galion ui using ratatui
 
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, poll};
-use ratatui::layout::{Alignment, Flex, Margin, Rect};
+use ratatui::layout::{Alignment, Flex, Margin, Position, Rect};
 use ratatui::style::{Modifier, Style, Stylize};
 use ratatui::text::Line;
 use ratatui::widgets::{
@@ -15,19 +15,33 @@ use ratatui::{
     text::Text,
     widgets::{Block, Paragraph},
 };
-use serde_json::{Value, json};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt::Display;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::thread::sleep;
 use std::time::Duration;
 use std::{io, thread};
 use time::{OffsetDateTime, macros::format_description};
 
-use crate::remote::{ConfigOrigin, RemoteConfiguration};
+use crate::remote::{ConfigOrigin, EditRemote, RemoteConfiguration};
 use crate::{GalionApp, GalionError};
 
+/// SyncJob data
+#[derive(Debug, Clone, PartialEq, PartialOrd, Ord, Eq)]
+pub struct SyncJobData {
+    /// sync job id
+    job_id: u64,
+    /// sync job name
+    name: String,
+    /// sync job src
+    src: String,
+    /// sync job dest
+    dest: String,
+}
+
 /// rclone job type
-type JobsList = BTreeMap<u64, JobState>;
+pub type JobsList = BTreeMap<SyncJobData, JobState>;
 
 /// Job statut
 #[derive(Debug)]
@@ -44,7 +58,7 @@ pub enum SyncJob {
     /// Exit
     Exit,
     /// Sync
-    Sync((String, String, String)),
+    Sync(SyncJobData),
 }
 
 /// Job status from rclone
@@ -54,15 +68,27 @@ pub struct JobStatus {
     success: bool,
     /// duration
     duration: f64,
-
+    /// error
+    error: String,
     /// start time
     #[serde(rename = "startTime")]
     start_time: String,
+
+    /// Debug string
+    debug_str: Option<String>,
 }
 
 impl Display for JobStatus {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "success: {}, duration: {}", self.success, self.duration)
+        if self.error.is_empty() {
+            write!(f, "success: {}, duration: {}", self.success, self.duration)
+        } else {
+            write!(
+                f,
+                "success: {} ({}), duration: {}",
+                self.success, self.error, self.duration
+            )
+        }
     }
 }
 
@@ -92,7 +118,11 @@ impl Display for JobState {
         match self {
             JobState::Sent => write!(f, "sent"),
             JobState::Pending(job_status) => {
-                write!(f, "waiting: start_time: {}", job_status.start_time)
+                write!(
+                    f,
+                    "waiting: start_time: {}",
+                    job_status.start_time, // job_status.debug_str
+                )
             }
             JobState::Done(job_status) => write!(f, "done: {}", job_status),
         }
@@ -116,20 +146,25 @@ impl GalionApp {
                 loop {
                     let is_jobs_waiting = tracking_jobs.values().any(|value| value.is_waiting());
                     let res_job = if is_jobs_waiting {
-                        for (job_id, job_state) in tracking_jobs.clone() {
+                        for (job_sync_data, job_state) in tracking_jobs.clone() {
                             if let JobState::Done(_) = job_state {
                                 continue;
-                            } else if let Ok(value_job_status) = rclone.job_status(job_id) {
+                            } else if let Ok(value_job_status) =
+                                rclone.job_status(job_sync_data.job_id)
+                            {
                                 // println!("{:?}", value_job_status);
                                 let is_finished = value_job_status.get("finished").cloned();
-                                let job_status: JobStatus =
+                                let debug_str = value_job_status.to_string();
+                                let mut job_status: JobStatus =
                                     serde_json::from_value(value_job_status)?;
+                                job_status.debug_str = Some(debug_str);
                                 if let Some(Value::Bool(finished)) = is_finished
                                     && finished
                                 {
-                                    tracking_jobs.insert(job_id, JobState::Done(job_status));
+                                    tracking_jobs.insert(job_sync_data, JobState::Done(job_status));
                                 } else {
-                                    tracking_jobs.insert(job_id, JobState::Pending(job_status));
+                                    tracking_jobs
+                                        .insert(job_sync_data, JobState::Pending(job_status));
                                 }
                             }
                         }
@@ -139,8 +174,11 @@ impl GalionApp {
                         };
                         match rx_to_ui.try_recv() {
                             Ok(job) => job,
-                            Err(std::sync::mpsc::TryRecvError::Empty) => continue,
-                            Err(std::sync::mpsc::TryRecvError::Disconnected) => return Ok(()),
+                            Err(mpsc::TryRecvError::Empty) => {
+                                sleep(Duration::from_millis(500));
+                                continue;
+                            }
+                            Err(mpsc::TryRecvError::Disconnected) => return Ok(()),
                         }
                     } else {
                         match rx_to_ui.recv() {
@@ -154,12 +192,15 @@ impl GalionApp {
                         SyncJob::Exit => {
                             return Ok(());
                         }
-                        SyncJob::Sync(_job_id) => {
-                            let job = rclone.rc_noop(json!({"_async": true}))?; // TODO
+                        SyncJob::Sync(sync_data_receiv) => {
+                            let job =
+                                rclone.sync(&sync_data_receiv.src, &sync_data_receiv.dest, true)?;
                             if let Some(Value::Number(jobid)) = job.get("jobid")
                                 && let Some(job_id) = jobid.as_u64()
                             {
-                                tracking_jobs.insert(job_id, JobState::Sent);
+                                let mut sync_data = sync_data_receiv.clone();
+                                sync_data.job_id = job_id;
+                                tracking_jobs.insert(sync_data, JobState::Sent);
                             }
                         }
                     }
@@ -196,21 +237,6 @@ impl GalionApp {
     }
 }
 
-/// Input string state
-#[derive(Debug)]
-struct EditString {
-    /// idx edit string
-    idx_string: usize,
-    /// Position of cursor in the editor area
-    character_index: usize,
-    /// Remote name
-    edit_remote_name: String,
-    /// Remote src
-    edit_remote_src: String,
-    /// Remote destination
-    edit_remote_dest: String,
-}
-
 /// Galion Tui mode
 #[derive(Debug)]
 enum TuiMode {
@@ -221,7 +247,7 @@ enum TuiMode {
     /// Delete mode - confirmation
     Delete,
     /// Edit string mode
-    EditString(EditString),
+    EditString(EditRemote),
 }
 
 /// Galion Tui app
@@ -368,7 +394,7 @@ impl<'a> TuiApp<'a> {
                 let (title, content) = if let TuiMode::Error(error_msg) = &self.mode {
                     ("Error", error_msg.as_ref())
                 } else {
-                    ("Delete config", "Delete the config (y/n)")
+                    ("Delete remote configuration", "Delete the config (y/n)")
                 };
                 let block = Block::bordered().title(title);
                 let error_msg_widget = Paragraph::new(Line::from(content))
@@ -424,6 +450,14 @@ impl<'a> TuiApp<'a> {
                     });
                 frame.render_widget(title_name, area_title_name);
                 frame.render_widget(input_name, area_name);
+                if edit_string.idx_string == 0 {
+                    frame.set_cursor_position(Position::new(
+                        // Draw the cursor at the current position in the input field.
+                        // This position is can be controlled via the left and right arrow key
+                        area_name.x + edit_string.character_index as u16,
+                        area_name.y,
+                    ));
+                }
                 let title_src =
                     Paragraph::new("Remote source").style(match edit_string.idx_string {
                         1 => Style::default().fg(Color::Yellow),
@@ -437,6 +471,14 @@ impl<'a> TuiApp<'a> {
                 );
                 frame.render_widget(title_src, area_title_src);
                 frame.render_widget(input_src, area_src);
+                if edit_string.idx_string == 1 {
+                    frame.set_cursor_position(Position::new(
+                        // Draw the cursor at the current position in the input field.
+                        // This position is can be controlled via the left and right arrow key
+                        area_src.x + edit_string.character_index as u16,
+                        area_src.y,
+                    ));
+                }
                 let title_dest =
                     Paragraph::new("Remote destination").style(match edit_string.idx_string {
                         2 => Style::default().fg(Color::Yellow),
@@ -451,6 +493,14 @@ impl<'a> TuiApp<'a> {
                     });
                 frame.render_widget(title_dest, area_title_dest);
                 frame.render_widget(input_dest, area_dest);
+                if edit_string.idx_string == 2 {
+                    frame.set_cursor_position(Position::new(
+                        // Draw the cursor at the current position in the input field.
+                        // This position is can be controlled via the left and right arrow key
+                        area_dest.x + edit_string.character_index as u16,
+                        area_dest.y,
+                    ));
+                }
             }
             _ => {}
         }
@@ -499,33 +549,14 @@ impl<'a> TuiApp<'a> {
             self.new_error("Remote doesn't have a destination - press e for edit");
             return;
         };
-        let sync_job = (
-            current_selected_job.remote_name.clone(),
-            remote_src.clone(),
-            remote_dest.clone(),
-        );
+        let sync_job = SyncJobData {
+            name: current_selected_job.remote_name.clone(),
+            src: remote_src.clone(),
+            dest: remote_dest.clone(),
+            job_id: 0, // fake job id
+        };
         if let Err(_e) = self.tx_to_thread.send(SyncJob::Sync(sync_job)) {
             // ignore
-        }
-    }
-
-    /// Delete a remote
-    fn delete_row(&mut self) {
-        if let Some(idx) = self.state.selected()
-            && let Some(config) = self.app.remotes().get(idx)
-        {
-            if config.config_origin == ConfigOrigin::RcloneConfig {
-                self.new_error("Cannot delete a remote from the rclone config");
-                return;
-            }
-            self.app.config.remote_configurations.remove(idx);
-            if let Err(e) = self.app.save_config() {
-                self.new_error(format!(
-                    "Failed to save the config after remote deletion {e}"
-                ));
-            } else {
-                self.mode = TuiMode::Normal
-            }
         }
     }
 
@@ -545,7 +576,7 @@ impl<'a> TuiApp<'a> {
                     self.exit();
                 }
                 KeyCode::Right => self.send_job(),
-                KeyCode::Char('d') | KeyCode::Delete | KeyCode::Backspace => {
+                KeyCode::Char('r') | KeyCode::Delete | KeyCode::Backspace => {
                     if let Some(idx) = self.state.selected()
                         && let Some(config) = self.app.remotes().get(idx)
                     {
@@ -556,6 +587,22 @@ impl<'a> TuiApp<'a> {
                         }
                     } else {
                         self.new_error("Cannot delete the config");
+                    }
+                }
+                KeyCode::Char('d') => {
+                    if let Some(idx) = self.state.selected()
+                        && let Some(config) = self.app.remotes().get(idx)
+                    {
+                        if config.config_origin == ConfigOrigin::RcloneConfig {
+                            self.new_error("Cannot duplicate a rclone config - try to edit it");
+                        } else {
+                            self.app
+                                .config
+                                .remote_configurations
+                                .insert(0, config.clone());
+                        }
+                    } else {
+                        self.new_error("Cannot duplicate the config");
                     }
                 }
                 KeyCode::Char('j') | KeyCode::Down => {
@@ -592,7 +639,7 @@ impl<'a> TuiApp<'a> {
                     if let Some(idx) = self.state.selected()
                         && let Some(config) = self.app.remotes().get(idx)
                     {
-                        self.mode = TuiMode::EditString(EditString {
+                        self.mode = TuiMode::EditString(EditRemote {
                             idx_string: 0,
                             character_index: 0,
                             edit_remote_name: config.remote_name.clone(),
@@ -616,7 +663,22 @@ impl<'a> TuiApp<'a> {
                     self.mode = TuiMode::Normal;
                 }
                 KeyCode::Char('y') | KeyCode::Enter => {
-                    self.delete_row();
+                    if let Some(idx) = self.state.selected()
+                        && let Some(config) = self.app.remotes().get(idx)
+                    {
+                        if config.config_origin == ConfigOrigin::RcloneConfig {
+                            self.new_error("Cannot delete a remote from the rclone config");
+                            return;
+                        }
+                        self.app.config.remote_configurations.remove(idx);
+                        if let Err(e) = self.app.save_config() {
+                            self.new_error(format!(
+                                "Failed to save the config after remote deletion {e}"
+                            ));
+                        } else {
+                            self.mode = TuiMode::Normal
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -627,26 +689,44 @@ impl<'a> TuiApp<'a> {
                 KeyCode::Down => {
                     if edit_string.idx_string != 2 {
                         edit_string.idx_string += 1;
-                        edit_string.character_index = 0; // TODO idx of string
+                        edit_string.reset_char_index()
                     }
                 }
                 KeyCode::Up => {
                     if edit_string.idx_string != 0 {
                         edit_string.idx_string -= 1;
-                        edit_string.character_index = 0; // TODO idx of string
+                        edit_string.reset_char_index()
                     }
                 }
                 KeyCode::Enter => {
-                    todo!()
+                    let new_remote = edit_string.finish();
+                    if let Some(idx) = self.state.selected()
+                        && let Some(config) = self.app.config.remote_configurations.get_mut(idx)
+                    {
+                        if config.config_origin == ConfigOrigin::GalionConfig {
+                            *config = new_remote;
+                        } else {
+                            self.app.config.remote_configurations.insert(0, new_remote);
+                        }
+                        if let Err(e) = self.app.save_config() {
+                            self.new_error(format!("Error save the config {e}"));
+                        } else {
+                            self.mode = TuiMode::Normal;
+                        }
+                    } else {
+                        self.new_error("Cannot edit remote");
+                    }
                 }
                 KeyCode::Tab => {
                     if edit_string.idx_string != 2 {
                         edit_string.idx_string += 1;
-                        edit_string.character_index = 0; // TODO idx of string
+                        edit_string.reset_char_index()
                     }
                 }
-                // KeyCode::Char(to_insert) => self.enter_char(to_insert),
-                // KeyCode::Backspace => self.delete_char(),
+                KeyCode::Left => edit_string.move_cursor_left(),
+                KeyCode::Right => edit_string.move_cursor_right(),
+                KeyCode::Char(to_insert) => edit_string.enter_char(to_insert),
+                KeyCode::Backspace => edit_string.delete_char(),
                 _ => {}
             },
         }
@@ -683,10 +763,12 @@ impl<'a> TuiApp<'a> {
                     " select | ".into(),
                     "(arrow_right)".bold(),
                     " launch job | ".into(),
-                    "(d)".bold(),
-                    " delete | ".into(),
+                    "(r)".bold(),
+                    " remove | ".into(),
                     "(e)".bold(),
-                    " edit".into(),
+                    " edit | ".into(),
+                    "(d)".bold(),
+                    " duplicate".into(),
                 ]
             }
             TuiMode::EditString(_) => vec![
@@ -697,7 +779,12 @@ impl<'a> TuiApp<'a> {
                 "(enter)".bold(),
                 " save".into(),
             ],
-            _ => todo!(),
+            _ => vec![
+                "(esc/n)".bold(),
+                " cancel | ".into(),
+                "(y)".bold(),
+                " delete".into(),
+            ],
         };
         let left_text = Line::from(text_helper);
         let now = OffsetDateTime::now_local().unwrap_or_else(|_| OffsetDateTime::now_utc());
@@ -736,8 +823,11 @@ impl<'a> TuiApp<'a> {
         } else {
             let mut str_to_show = String::new();
             // Show latest jobs first
-            for (one_job_id, state) in self.jobs.iter().rev() {
-                str_to_show.push_str(&format!("job {}: {}\n", one_job_id, state));
+            for (one_job_data, state) in self.jobs.iter().rev() {
+                str_to_show.push_str(&format!(
+                    "job {} ({}): {}\n",
+                    one_job_data.name, one_job_data.job_id, state
+                ));
             }
             str_to_show
         };
