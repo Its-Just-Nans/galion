@@ -13,6 +13,12 @@ pub struct Rclone {
     librclone_is_initialized: bool,
 }
 
+impl Drop for Rclone {
+    fn drop(&mut self) {
+        self.finalize();
+    }
+}
+
 impl Rclone {
     /// Create a new rclone instance and initialize it
     #[must_use]

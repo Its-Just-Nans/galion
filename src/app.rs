@@ -29,7 +29,8 @@ impl GalionConfig {
     /// Load the config
     /// # Errors
     /// Fails if fails to log the config
-    fn load_config(config_path: PathBuf) -> Result<GalionConfig, GalionError> {
+    fn load_config(config_path: Option<PathBuf>) -> Result<GalionConfig, GalionError> {
+        let config_path = config_path.unwrap_or(GalionConfig::get_default_config_path()?);
         if !config_path.exists() {
             if let Some(parent) = config_path.parent() {
                 std::fs::create_dir_all(parent)?;
@@ -87,23 +88,19 @@ pub struct GalionArgs {
     #[arg(long, value_name = "FILE")]
     config: Option<PathBuf>,
 
-    /// Full path to the configuration file
+    /// Path to the rclone configuration file
     #[arg(long, value_name = "FILE")]
     rclone_config: Option<PathBuf>,
 
-    /// Full path to the configuration file
+    /// Should rclone ask for a password (if needed)
     #[arg(long)]
     rclone_ask_password: bool,
 
-    /// Full path to the configuration file
+    /// Hide the banner
     #[arg(long, action=ArgAction::SetTrue)]
     pub(crate) hide_banner: bool,
 
-    /// Should update the config file (false)
-    #[arg(long, action=ArgAction::SetTrue)]
-    auto_update_config: bool,
-
-    /// Ignore fuplicate remote
+    /// Ignore duplicate remote
     #[arg(long, action=ArgAction::SetTrue)]
     ignore_duplicate_remote: bool,
 }
@@ -133,23 +130,6 @@ impl GalionApp {
 
     /// Waves ASCII art
     pub(crate) const WAVES: &str = "~~~~~~~~~~~~";
-
-    /// Create new galion instance
-    /// # Errors
-    /// Error if fails
-    pub fn try_new(args: &[String]) -> Result<Self, GalionError> {
-        let galion_args = GalionArgs::try_parse_from(args).map_err(|e| e.to_string())?;
-        let config_path = galion_args
-            .config
-            .clone()
-            .unwrap_or(GalionConfig::get_default_config_path()?);
-        let config = GalionConfig::load_config(config_path)?;
-        Ok(Self {
-            config,
-            galion_args,
-            rclone: Rclone::new(),
-        })
-    }
 
     /// Galion logo
     #[must_use]
@@ -185,16 +165,20 @@ impl GalionApp {
     /// Create new galion instance and init it
     /// # Errors
     /// Error if fails
-    pub fn try_new_init(args: &[String]) -> Result<Self, GalionError> {
-        let mut galion = Self::try_new(args)?;
-        galion.init()?;
-        Ok(galion)
+    pub fn try_from_galion_args(galion_args: GalionArgs) -> Result<Self, GalionError> {
+        let config = GalionConfig::load_config(galion_args.config.clone())?;
+        let galion = Self {
+            config,
+            galion_args,
+            rclone: Rclone::new(),
+        };
+        galion.init()
     }
 
     /// Init the app
     /// # Errors
     /// Fails if fails to init
-    pub fn init(&mut self) -> Result<(), GalionError> {
+    fn init(mut self) -> Result<Self, GalionError> {
         if let Some(rclone_config_path) = &self.galion_args.rclone_config {
             self.rclone
                 .set_config_path(&rclone_config_path.to_string_lossy())?;
@@ -262,9 +246,6 @@ impl GalionApp {
             };
             self.config.remote_configurations.push(remote_config);
         }
-        if self.galion_args.auto_update_config {
-            self.config.save_config()?;
-        }
         if self.config.remote_configurations.is_empty() {
             return Err(GalionError::new(format!(
                 "No remote found in rclone 'config/listremotes' and in the galion config at {} - please add remote with rclone CLI",
@@ -272,12 +253,6 @@ impl GalionApp {
             )));
         }
 
-        Ok(())
-    }
-}
-
-impl Drop for GalionApp {
-    fn drop(&mut self) {
-        self.rclone.finalize();
+        Ok(self)
     }
 }

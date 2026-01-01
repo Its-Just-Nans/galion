@@ -35,14 +35,18 @@ mod remote;
 mod ui;
 
 pub use app::GalionApp;
+pub use app::GalionArgs;
 pub use errors::GalionError;
 
 /// Main galion CLI
 /// # Errors
 /// Fails if an error happens
 pub fn galion_main() -> Result<(), GalionError> {
+    use clap::Parser;
     let args: Vec<String> = std::env::args().collect();
-    let mut app = GalionApp::try_new_init(&args)?;
+    let galion_args =
+        GalionArgs::try_parse_from(args).map_err(|e| e.to_string().trim_end().to_string())?;
+    let app = GalionApp::try_from_galion_args(galion_args)?;
     app.run_tui()?;
     Ok(())
 }

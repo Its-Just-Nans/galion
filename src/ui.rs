@@ -229,10 +229,10 @@ impl GalionApp {
         }
     }
 
-    /// Run the galion ui
+    /// Run the galion ui - final methods so it's `mut self` and not `&mut self`
     /// # Errors
     /// Errors when ui errors
-    pub fn run_tui(&mut self) -> Result<(), GalionError> {
+    pub fn run_tui(mut self) -> Result<(), GalionError> {
         // thread scope assert that the thread will not outlive the function
         thread::scope(|s| {
             let rclone = &self.rclone;
@@ -345,7 +345,7 @@ impl<'a> TuiApp<'a> {
     }
 
     /// runs the application's main loop until the user quits
-    pub fn run(&mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
+    pub fn run(mut self, terminal: &mut DefaultTerminal) -> io::Result<()> {
         while !self.exit {
             if let Ok(rx_from_thread) = self.rx_from_thread.try_recv() {
                 match rx_from_thread {
