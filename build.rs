@@ -11,7 +11,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // return early for docs.rs
     if env::var("DOCS_RS").is_ok() {
-        std::fs::write(out_path.join("bindings.rs"), "")?;
+        std::fs::write(out_path.join("bindings.rs"), FAKE_BINDINGS)?;
         return Ok(());
     }
 
@@ -85,3 +85,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     Ok(())
 }
+
+// https://github.com/rust-lang/docs.rs/issues/3112
+const FAKE_BINDINGS: &str = r#"
+#[repr(C)]
+#[derive(Debug, Copy, Clone)]
+pub struct RcloneRPCResult {
+    pub Output: *mut ::std::os::raw::c_char,
+    pub Status: ::std::os::raw::c_int,
+}
+unsafe extern "C" {
+    pub fn RcloneInitialize();
+}
+unsafe extern "C" {
+    pub fn RcloneFinalize();
+}
+unsafe extern "C" {
+    pub fn RcloneRPC(
+        method: *mut ::std::os::raw::c_char,
+        input: *mut ::std::os::raw::c_char,
+    ) -> RcloneRPCResult;
+}
+unsafe extern "C" {
+    pub fn RcloneFreeString(str_: *mut ::std::os::raw::c_char);
+}
+"#;
