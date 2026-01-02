@@ -12,6 +12,8 @@ pub struct GalionError {
     pub source: Option<Arc<dyn std::error::Error + Send + Sync>>,
 }
 
+impl std::error::Error for GalionError {}
+
 impl Clone for GalionError {
     fn clone(&self) -> Self {
         Self {
