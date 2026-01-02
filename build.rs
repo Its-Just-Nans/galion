@@ -10,6 +10,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // return early for docs.rs
     if env::var("DOCS_RS").is_ok() {
+        std::fs::write(out_path.join("bindings.rs"), "")?;
         return Ok(());
     }
 
