@@ -7,14 +7,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let rclone_repo = format!("github.com/rclone/rclone/{}", lib_name);
     let target_triple = env::var("TARGET")?;
     let out_path = PathBuf::from(env::var("OUT_DIR")?).join(lib_name);
+    fs::create_dir_all(&out_path)?;
 
     // return early for docs.rs
     if env::var("DOCS_RS").is_ok() {
         std::fs::write(out_path.join("bindings.rs"), "")?;
         return Ok(());
     }
-
-    fs::create_dir_all(&out_path)?;
 
     // Re-run build script if these files change
     println!(
